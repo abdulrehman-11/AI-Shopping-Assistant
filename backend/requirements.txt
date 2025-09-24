@@ -1,0 +1,10 @@
+fastapi==0.104.1
+uvicorn==0.24.0
+pydantic==2.5.0
+python-dotenv==1.0.0
+langgraph==0.2.16
+langchain-google-genai==1.0.10
+pinecone-client==3.2.2
+cohere==4.37
+psycopg2-binary==2.9.9
+redis==5.0.1
