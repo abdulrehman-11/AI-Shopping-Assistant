@@ -44,7 +44,7 @@ const generateSessionId = () => {
 };
 
 const BACKEND_URL = process.env.NODE_ENV === 'production' 
-  ? 'https://your-backend-url.com'  // Replace with your backend URL
+  ? 'https://your-deployed-backend-url.com'  // Replace with your actual backend URL
   : 'http://localhost:8000';
 
 const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
