@@ -35,9 +35,7 @@ interface ChatBotProps {
 
 // Generate consistent session ID
 const generateSessionId = () => {
-  const stored = localStorage.getItem('chatbot_session_id');
-  if (stored) return stored;
-  
+  // Create new session for each page load to ensure fresh conversations
   const newId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   localStorage.setItem('chatbot_session_id', newId);
   return newId;
@@ -173,41 +171,49 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
     }
   };
 
-  // Fallback method for when backend is unavailable
+  // Improved fallback method for when backend is unavailable
   const handleMockResponse = async (userQuery: string) => {
-    // Import products data dynamically to avoid build issues
     try {
       const productsModule = await import('@/data/products.json');
       const productsData = productsModule.default;
       
       setTimeout(() => {
         const query = userQuery.toLowerCase();
-        let response = "I found some products that might interest you!";
+        let response = "Based on what you're looking for, here are some great options:";
         let suggestedProducts: any[] = [];
 
-        // Simple keyword matching for product suggestions
-        if (query.includes('bag') || query.includes('backpack')) {
+        // Simple keyword matching
+        if (query.includes('nike') || query.includes('shoe')) {
+          suggestedProducts = productsData.filter(p => 
+            p.category === 'Nike Shoes' || p.category === 'Men Shoes'
+          ).slice(0, 3);
+          response = "I found some excellent Nike shoes for you:";
+        } else if (query.includes('shirt') || query.includes('clothing')) {
+          suggestedProducts = productsData.filter(p => 
+            p.category === 'Men Clothing' || p.category === 'Women Clothing'
+          ).slice(0, 3);
+          response = "Here are some popular clothing items:";
+        } else if (query.includes('bag') || query.includes('backpack')) {
           suggestedProducts = productsData.filter(p => p.category === 'Men Bags').slice(0, 3);
           response = "Here are some great bags I found for you:";
-        } else if (query.includes('shoe') || query.includes('sneaker')) {
-          suggestedProducts = productsData.filter(p => p.category === 'Men Shoes' || p.category === 'Nike Shoes').slice(0, 3);
-          response = "Check out these popular shoes:";
         } else if (query.includes('jewelry') || query.includes('watch')) {
           suggestedProducts = productsData.filter(p => p.category === 'Men Jwelerry').slice(0, 3);
           response = "Here are some elegant jewelry pieces:";
-        } else if (query.includes('clothing') || query.includes('shirt') || query.includes('hoodie')) {
-          suggestedProducts = productsData.filter(p => p.category === 'Men Clothing' || p.category === 'Women Clothing').slice(0, 3);
-          response = "I found some great clothing options:";
+        } else if (query.includes('hoodie') || query.includes('sweatshirt')) {
+          suggestedProducts = productsData.filter(p => 
+            p.category === 'Men Clothing' || p.category === 'Women Clothing'
+          ).slice(0, 3);
+          response = "I found some comfortable hoodies for you:";
         } else {
-          // Random product suggestions
+          // Default suggestions
           const shuffled = [...productsData].sort(() => 0.5 - Math.random());
           suggestedProducts = shuffled.slice(0, 3);
-          response = "Based on our popular items, you might like these:";
+          response = "Let me show you some popular products that might interest you:";
         }
 
-        // Convert to expected format
+        // Convert to UI format
         const products: Product[] = suggestedProducts.map(p => ({
-          asin: p.asin || `mock_${p.title.slice(0, 10)}`,
+          asin: p.asin || `mock_${Date.now()}`,
           image: p.thumbnailImage || p.image || '',
           title: p.title,
           description: p.brand || p.category || '',
@@ -221,8 +227,7 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
         setIsTyping(false);
       }, 1000);
     } catch (error) {
-      console.error('Mock response error:', error);
-      addMessage('bot', "I'm having trouble right now. Please try again later.");
+      addMessage('bot', "I'm having trouble right now, but I'm here to help you find great products. What are you looking for?");
       setIsTyping(false);
     }
   };
@@ -332,8 +337,9 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
         </div>
       </CardHeader>
 
-      <CardContent className="flex-1 p-0 flex flex-col">
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <CardContent className="flex-1 p-0 flex flex-col min-h-0">
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
+
           {messages.map((message) => (
             <div key={message.id} className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}>
               <div className={`max-w-[80%] p-3 rounded-lg ${
