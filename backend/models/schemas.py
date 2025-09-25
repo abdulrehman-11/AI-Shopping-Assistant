@@ -26,6 +26,7 @@ class QueryType(str, Enum):
     VAGUE = "vague"
     SPECIFIC = "specific"
     CLARIFICATION = "clarification"
+    OFF_TOPIC = "off_topic"
 
 class QueryClassification(BaseModel):
     query_type: QueryType
@@ -56,10 +57,14 @@ class AgentState(BaseModel):
     session_id: str
     user_context: Dict[str, Any]
     query_classification: Optional[QueryClassification] = None
+    processed_query: Optional[str] = None
     search_results: Optional[Dict[str, Any]] = None  # Changed from SearchResult to Dict
     needs_clarification: bool = False
     clarification_questions: List[str] = []
     final_response: Optional[str] = None
+    is_off_topic: bool = False
+    off_topic_reason: Optional[str] = None
+    original_simple_response: Optional[str] = None  # Store SimpleProcessor response
     
     class Config:
         arbitrary_types_allowed = True

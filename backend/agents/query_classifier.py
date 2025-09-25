@@ -4,6 +4,7 @@ from typing import Dict, Any
 from config import Config
 from models.schemas import QueryClassification, QueryType
 import json
+import re
 
 class QueryClassifierAgent:
     def __init__(self):
@@ -14,38 +15,37 @@ class QueryClassifierAgent:
         )
         
         self.classification_prompt = PromptTemplate.from_template("""
-You are a query classifier for an e-commerce chatbot. Analyze the user's message and classify it.
+You are a strict query classifier for an e-commerce shopping assistant. Decide routing.
 
 User Message: "{query}"
-Previous Context: {context}
+Conversation Context: {context}
 
-Classify the query as:
-1. VAGUE - User wants something but lacks specifics (gender, exact category, etc.)
-2. SPECIFIC - User has clear requirements  
-3. CLARIFICATION - User is responding to clarification questions
+Classify into exactly one of:
+- VAGUE: shopping intent but lacks specifics (gender, category, brand, size, budget)
+- SPECIFIC: clear product intent with sufficient details to search
+- CLARIFICATION: user is answering previous clarification questions
+- OFF_TOPIC: not about shopping or our products (e.g., general knowledge like China history)
 
-Extract information if available:
-- gender (men/women/unisex)
-- category (shoes, clothing, electronics, etc.)
-- brand preference
-- price range preference
-- specific features
+Extract fields when available: gender (men/women/unisex), category, brand, price_range (budget/mid/premium), size, usage (running, hiking, office, gift), and key features.
 
-Identify missing information needed to search effectively.
+List what is missing to search effectively (e.g., gender, category, budget, size, usage).
 
-Return response in this exact JSON format:
-{{
-    "query_type": "VAGUE|SPECIFIC|CLARIFICATION",
-    "confidence": 0.8,
-    "extracted_info": {{
-        "gender": "men|women|unisex|null",
-        "category": "category_name|null",
-        "brand": "brand_name|null",
-        "price_range": "budget|mid|premium|null",
-        "specific_features": ["feature1", "feature2"]
-    }},
-    "missing_info": ["gender", "specific_category"]
-}}
+Output STRICT JSON only with these keys:
+{
+  "query_type": "VAGUE|SPECIFIC|CLARIFICATION|OFF_TOPIC",
+  "confidence": 0.0-1.0,
+  "extracted_info": {
+    "gender": "men|women|unisex|null",
+    "category": "string|null",
+    "brand": "string|null",
+    "price_range": "budget|mid|premium|null",
+    "size": "string|null",
+    "usage": "string|null",
+    "specific_features": ["feature1", "feature2"]
+  },
+  "missing_info": ["field1", "field2"],
+  "off_topic_reason": "string|null"
+}
 """)
     
     def classify_query(self, query: str, context: Dict[str, Any] = None) -> QueryClassification:
@@ -67,21 +67,72 @@ Return response in this exact JSON format:
 
             try:
                 result = json.loads(content)
-            except:
-    # Fallback if JSON parsing fails
+            except Exception:
+                # Fallback if JSON parsing fails
                 return QueryClassification(
-                query_type=QueryType.VAGUE,
-                confidence=0.5,
-                extracted_info={},
-                missing_info=["gender", "category"]
-    )
-        
+                    query_type=QueryType.VAGUE,
+                    confidence=0.5,
+                    extracted_info={},
+                    missing_info=["gender", "category"]
+                )
             
+            query_type_value = str(result.get("query_type", "vague")).lower()
+            if query_type_value not in {"vague", "specific", "clarification", "off_topic"}:
+                query_type_value = "vague"
+
+            # Start with LLM extraction
+            extracted = result.get("extracted_info", {}) or {}
+            missing = set((result.get("missing_info", []) or []))
+
+            # Deterministic heuristics to patch common cases (e.g., "nike shoes for men")
+            q_lower = (query or "").lower()
+            # Gender
+            gender = extracted.get("gender")
+            if not gender:
+                if re.search(r"\b(men|man's|male|boys)\b", q_lower):
+                    gender = "men"
+                elif re.search(r"\b(women|woman|female|girls|ladies)\b", q_lower):
+                    gender = "women"
+                if gender:
+                    extracted["gender"] = gender
+                    if "gender" in missing:
+                        missing.discard("gender")
+            # Category
+            category = extracted.get("category")
+            if not category:
+                if re.search(r"\b(sneaker|sneakers|shoe|shoes|trainers|running shoes)\b", q_lower):
+                    category = "shoes"
+                elif re.search(r"\b(sandal|sandals|flip flops)\b", q_lower):
+                    category = "sandals"
+                elif re.search(r"\b(boot|boots)\b", q_lower):
+                    category = "boots"
+                if category:
+                    extracted["category"] = category
+                    if "category" in missing:
+                        missing.discard("category")
+            # Brand (minimal list; can be extended)
+            brand = extracted.get("brand")
+            if not brand:
+                if re.search(r"\bnike\b", q_lower):
+                    brand = "Nike"
+                elif re.search(r"\badidas\b", q_lower):
+                    brand = "Adidas"
+                elif re.search(r"\bpuma\b", q_lower):
+                    brand = "Puma"
+                if brand:
+                    extracted["brand"] = brand
+                    if "brand" in missing:
+                        missing.discard("brand")
+
+            # If we clearly see shopping signals (gender/category/brand), treat as SPECIFIC unless off-topic
+            if query_type_value != "off_topic" and (extracted.get("category") or extracted.get("brand") or extracted.get("gender")):
+                query_type_value = "specific"
+
             return QueryClassification(
-                query_type=QueryType(result["query_type"].lower()),
-                confidence=result["confidence"],
-                extracted_info=result["extracted_info"],
-                missing_info=result["missing_info"]
+                query_type=QueryType(query_type_value),
+                confidence=float(result.get("confidence", 0.7)),
+                extracted_info=extracted,
+                missing_info=sorted(list(missing))
             )
             
         except Exception as e:
