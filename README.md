@@ -1,73 +1,55 @@
-# Welcome to your Lovable project
+# E-commerce Chatbot Backend
 
-## Project info
+A sophisticated LangGraph-powered backend for semantic product search and recommendations.
 
-**URL**: https://lovable.dev/projects/0213e5a6-ca10-4f77-838b-dfe7ac3555a5
+## Features
 
-## How can I edit this code?
+- **LangGraph Workflow**: Multi-agent conversation flow
+- **Semantic Search**: Pinecone vector database with Cohere embeddings
+- **Query Classification**: Gemini-powered query understanding
+- **Session Memory**: Redis-backed conversation memory
+- **Product Reranking**: LLM-enhanced result optimization
+- **ASIN Fallback**: JSON data enrichment when vector data is incomplete
+- **PostgreSQL Integration**: Neon database for product details
 
-There are several ways of editing your application.
+## Setup
 
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/0213e5a6-ca10-4f77-838b-dfe7ac3555a5) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
+1. Install dependencies:
+```bash
+cd backend
+pip install -r requirements.txt
 ```
 
-**Edit a file directly in GitHub**
+2. Set up environment variables in `.env`:
+```
+GEMINI_API_KEY=your_gemini_key
+PINECONE_API_KEY=your_pinecone_key
+COHERE_API_KEY=your_cohere_key
+NEON_HOST=your_neon_host
+NEON_DB=your_neon_db
+NEON_USER=your_neon_user
+NEON_PASSWORD=your_neon_password
+PINECONE_INDEX=your_pinecone_index
+REDIS_URL=your_redis_url (optional)
+```
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+3. Run the server:
+```bash
+python app.py
+```
 
-**Use GitHub Codespaces**
+## API Endpoints
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+- `POST /chat` - Main chat endpoint
+- `GET /session/{session_id}/history` - Get conversation history
+- `DELETE /session/{session_id}` - Clear session
+- `GET /health` - Health check
 
-## What technologies are used for this project?
+## Architecture
 
-This project is built with:
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/0213e5a6-ca10-4f77-838b-dfe7ac3555a5) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+1. **Query Classification** - Understands user intent (vague/specific/clarification)
+2. **Semantic Search** - Pinecone vector search with Cohere embeddings
+3. **Data Enrichment** - Combines vector, DB, and JSON fallback data
+4. **LLM Reranking** - Gemini-powered result optimization
+5. **Response Generation** - Context-aware response with products
+6. **Session Memory** - Persistent conversation context
