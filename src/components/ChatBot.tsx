@@ -347,7 +347,14 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
                   ? 'bg-primary text-primary-foreground' 
                   : 'bg-muted'
               }`}>
-                <p className="text-sm">{message.text}</p>
+                <div className="text-sm">
+                  {message.text.split('\n').map((line, index) => (
+                  <p key={index} className="mb-2 last:mb-0">
+                  {line}
+                  </p>
+                    ))}
+                    </div>
+
                 
                 {/* Clarification Questions */}
                 {message.needsClarification && message.clarificationQuestions && (
