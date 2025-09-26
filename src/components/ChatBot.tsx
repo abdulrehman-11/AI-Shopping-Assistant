@@ -42,7 +42,7 @@ const generateSessionId = () => {
 };
 
 const BACKEND_URL = process.env.NODE_ENV === 'production' 
-  ? 'https://your-deployed-backend-url.com'  // Replace with your actual backend URL
+  ? 'https://ai-shopping-assistant-1.onrender.com/'  // Replace with your actual backend URL
   : 'http://localhost:8000';
 
 const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
