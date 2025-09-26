@@ -109,12 +109,11 @@ const Index = () => {
               Start Shopping
             </Button>
             <Button 
-              size="lg" 
-              variant="outline" 
-              className="border-white text-white hover:bg-white hover:text-primary px-8 py-3 text-lg font-semibold"
-              onClick={() => setIsChatOpen(true)}
+            size="lg" 
+            className="backdrop-blur-md bg-white/20 border border-white/30 text-white hover:bg-white/30 hover:scale-105 hover:shadow-2xl px-8 py-3 text-lg font-semibold transition-all duration-300 ease-in-out"
+            onClick={() => setIsChatOpen(true)}
             >
-              Try AI Assistant
+            Try AI Assistant
             </Button>
           </div>
         </div>

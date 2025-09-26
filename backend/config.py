@@ -33,7 +33,8 @@ class Config:
 # Validate required environment variables
 required_vars = [
     "GEMINI_API_KEY", "PINECONE_API_KEY", "COHERE_API_KEY",
-    "NEON_HOST", "NEON_DB", "NEON_USER", "NEON_PASSWORD", "PINECONE_INDEX"
+    #"NEON_HOST", "NEON_DB", "NEON_USER", "NEON_PASSWORD", 
+    "PINECONE_INDEX"
 ]
 
 missing_vars = [var for var in required_vars if not getattr(Config, var)]
