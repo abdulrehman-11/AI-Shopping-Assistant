@@ -8,3 +8,4 @@ pinecone
 cohere
 psycopg2-binary
 redis
+langchain
