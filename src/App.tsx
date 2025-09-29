@@ -6,6 +6,8 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Index from "./pages/Index";
 import CategoryPage from "./pages/CategoryPage";
 import NotFound from "./pages/NotFound";
+import SearchPage from "./pages/SearchPage";
+
 
 const queryClient = new QueryClient();
 
@@ -16,10 +18,10 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<Index />} />
-          <Route path="/category/:slug" element={<CategoryPage />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-          <Route path="*" element={<NotFound />} />
+        <Route path="/" element={<Index />} />
+        <Route path="/search" element={<SearchPage />} />
+        <Route path="/category/:slug" element={<CategoryPage />} />
+        <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
     </TooltipProvider>

@@ -27,11 +27,13 @@ class QueryType(str, Enum):
     SPECIFIC = "specific"
     CLARIFICATION = "clarification"
     OFF_TOPIC = "off_topic"
+    PRODUCT_QUESTION = "product_question"
+    UNAVAILABLE = "unavailable"
 
 class QueryClassification(BaseModel):
     query_type: QueryType
     confidence: float
-    extracted_info: Dict[str, Any]  # gender, category, brand, etc.
+    extracted_info: Dict[str, Any]  # gender, category, brand, product_name, etc.
     missing_info: List[str]  # What info is needed
 
 class Product(BaseModel):
@@ -58,13 +60,19 @@ class AgentState(BaseModel):
     user_context: Dict[str, Any]
     query_classification: Optional[QueryClassification] = None
     processed_query: Optional[str] = None
-    search_results: Optional[Dict[str, Any]] = None  # Changed from SearchResult to Dict
+    search_results: Optional[Dict[str, Any]] = None
     needs_clarification: bool = False
     clarification_questions: List[str] = []
     final_response: Optional[str] = None
     is_off_topic: bool = False
     off_topic_reason: Optional[str] = None
-    original_simple_response: Optional[str] = None  # Store SimpleProcessor response
+    original_simple_response: Optional[str] = None
+    
+    # New fields for improvements
+    conversation_context: Optional[str] = None  # Cached context to avoid multiple fetches
+    unavailable_category: Optional[str] = None  # For unavailable category handling
+    relevance_status: Optional[str] = None  # highly_relevant, partially_relevant, not_relevant
+    relevance_reasoning: Optional[str] = None  # Why products are/aren't relevant
     
     class Config:
         arbitrary_types_allowed = True

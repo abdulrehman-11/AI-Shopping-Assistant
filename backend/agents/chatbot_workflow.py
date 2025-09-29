@@ -20,7 +20,6 @@ class ChatbotWorkflow:
         
         self.simple_processor = SimpleProcessor()
         self.pinecone_tool = PineconeTool()
-        #self.database_tool = DatabaseTool()
         self.session_manager = SessionManager(Config.REDIS_URL)
         self.json_fallback = JsonFallbackTool()
         self.cache_manager = CacheManager(self.session_manager.redis if self.session_manager.use_redis else None)
@@ -45,15 +44,19 @@ class ChatbotWorkflow:
         self.app = self.workflow.compile()
     
     def _build_workflow(self) -> StateGraph:
-        """Build workflow with proper routing"""
+        """Build workflow with improved routing"""
         workflow = StateGraph(AgentState)
         
         # Add nodes
         workflow.add_node("classify_intent", self.classify_intent_node)
         workflow.add_node("handle_off_topic", self.handle_off_topic_node)
+        workflow.add_node("handle_unavailable_category", self.handle_unavailable_category_node)
         workflow.add_node("handle_vague", self.handle_vague_node)
+        workflow.add_node("answer_product_question", self.answer_product_question_node)
         workflow.add_node("process_query", self.process_query_node)
         workflow.add_node("search_products", self.search_products_node)
+        workflow.add_node("validate_relevance", self.validate_relevance_node)
+        workflow.add_node("handle_no_relevant_products", self.handle_no_relevant_products_node)
         workflow.add_node("generate_response", self.generate_response_node)
         
         # Set entry point and add conditional edges
@@ -63,26 +66,46 @@ class ChatbotWorkflow:
             self.route_after_classification,
             {
                 "off_topic": "handle_off_topic",
-                "vague": "handle_vague", 
+                "unavailable": "handle_unavailable_category",
+                "vague": "handle_vague",
+                "product_question": "answer_product_question",
                 "specific": "process_query"
             }
         )
         
         # Connect remaining edges
         workflow.add_edge("handle_off_topic", END)
+        workflow.add_edge("handle_unavailable_category", END)
         workflow.add_edge("handle_vague", END)
+        workflow.add_edge("answer_product_question", END)
         workflow.add_edge("process_query", "search_products")
-        workflow.add_edge("search_products", "generate_response")
+        workflow.add_edge("search_products", "validate_relevance")
+        
+        # Conditional edge after validation
+        workflow.add_conditional_edges(
+            "validate_relevance",
+            self.route_after_validation,
+            {
+                "no_relevant": "handle_no_relevant_products",
+                "relevant": "generate_response"
+            }
+        )
+        
+        workflow.add_edge("handle_no_relevant_products", END)
         workflow.add_edge("generate_response", END)
         
         return workflow
     
     def classify_intent_node(self, state: AgentState) -> AgentState:
-        """Classify user intent using Gemini"""
+        """Enhanced classification with inventory check and question detection"""
         print(f"\n🎯 STEP 0: Classifying Intent")
         print(f"📝 User Query: '{state.current_query}'")
         
-        conversation_context = self.session_manager.get_conversation_context(state.session_id, limit=6)
+        # Get context once and store in state for reuse
+        if not hasattr(state, 'conversation_context') or not state.conversation_context:
+            state.conversation_context = self.session_manager.get_conversation_context(state.session_id, limit=10)
+        
+        conversation_context = state.conversation_context
         
         prompt = f"""
 Classify this user query for an e-commerce shopping assistant.
@@ -94,30 +117,41 @@ Classification Rules:
 1. OFF_TOPIC: Not related to shopping, products, or e-commerce
    - Examples: "What is China?", "How to cook pasta?", "What's the weather?"
    
-2. VAGUE: Shopping intent but missing GENDER (this is the only criteria for vague)
-   - Examples: "I want shoes", "looking for clothes", "need electronics"
-   - NOTE: Missing brand, size, price, category is OK - only missing gender makes it vague
+2. PRODUCT_QUESTION: Asking for information about specific product (not browsing/buying)
+   - Examples: "What is the price of Nike Air Max?", "Tell me about Adidas Ultraboost", 
+               "Is Sony headphone waterproof?", "What colors available for iPhone 14?"
+   - Key indicators: "what is", "tell me about", "how much", "what color", "describe"
    
-3. SPECIFIC: Clear shopping intent with gender specified OR follow-up to previous specific query
-   - Examples: "shoes for men", "women's dress", "nike shoes", "more expensive", "under $100"
+3. VAGUE: Shopping/buying intent but missing critical info (GENDER for clothing/shoes/accessories)
+   - Examples: "I want shoes", "looking for clothes", "need a watch"
+   - NOTE: Missing brand, size, price is OK - only missing gender makes it vague
+   - NOTE: Also note that not everything need to be gendered - e.g. "I want a laptop" is SPECIFIC, Understand the query on your own and decide either it neeed to be gendered or not
+   - IMPORTANT: Extract category to check inventory
+   
+4. SPECIFIC: Clear shopping intent with sufficient details OR follow-up to previous specific query
+   - Examples: "shoes for men", "women's dress", "nike shoes", "more expensive", "under $100", or even just 'men or women'
+   - Follow-ups are SPECIFIC if previous context has gender 
 
 Consider conversation context - if user previously specified gender, follow-ups are SPECIFIC.
 
 Return JSON:
 {{
-    "classification": "OFF_TOPIC|VAGUE|SPECIFIC",
+    "classification": "OFF_TOPIC|PRODUCT_QUESTION|VAGUE|SPECIFIC",
     "confidence": 0.0-1.0,
     "reasoning": "explanation of classification",
     "extracted_info": {{
+        "category": "extracted product category (shoes, shirt, laptop, etc.)",
+        "brand": "extracted brand if mentioned",
+        "product_name": "specific product name if asking about it",
         "has_gender": true/false,
-        "has_category": true/false,
+        "is_question": true/false,
         "is_followup": true/false
     }}
 }}
 """
 
         try:
-            print("📤 Sending to Gemini classifier...")
+            print("🔤 Sending to Gemini classifier...")
             response = self.classifier_llm.invoke(prompt)
             content = response.content.strip()
             
@@ -128,11 +162,24 @@ Return JSON:
             print(f"📥 Classification Result: {json.dumps(result, indent=2)}")
             
             classification_type = result.get("classification", "SPECIFIC")
+            extracted_info = result.get("extracted_info", {})
+            
+            # Quick inventory check for VAGUE queries
+            if classification_type == "VAGUE":
+                category = extracted_info.get("category", "")
+                if category:
+                    print(f"🔍 Checking inventory for category: {category}")
+                    inventory_check = self._quick_inventory_check(category)
+                    
+                    if not inventory_check:
+                        print(f"❌ Category '{category}' not available in inventory")
+                        classification_type = "UNAVAILABLE"
+                        state.unavailable_category = category
             
             query_classification = QueryClassification(
                 query_type=QueryType(classification_type.lower()),
                 confidence=float(result.get("confidence", 0.8)),
-                extracted_info=result.get("extracted_info", {}),
+                extracted_info=extracted_info,
                 missing_info=["gender"] if classification_type == "VAGUE" else []
             )
             
@@ -151,11 +198,66 @@ Return JSON:
         
         return state
     
+    def _quick_inventory_check(self, category: str) -> bool:
+        """Quick check if category exists - using better search strategy"""
+        try:
+            # Search with category + common descriptors to get better results
+            test_queries = [
+                category,
+                f"{category} products",
+                f"buy {category}",
+            ]
+        
+            for query in test_queries:
+                products = self.pinecone_tool.search_similar_products(
+                    query=query,
+                    filters=None,
+                    top_k=5  # Get top 5 to verify quality
+            )
+            
+                if products and len(products) > 0:
+                    # Verify at least one product has decent similarity
+                    # and title/category somewhat matches
+                    for p in products:
+                        title = (p.get('title', '') or '').lower()
+                        cat = (p.get('category', '') or '').lower()
+                    
+                        # Check if category word appears in title or category field
+                        if category.lower() in title or category.lower() in cat:
+                            return True
+                    
+                        # Or if similarity is very high (>0.75), trust it
+                        if p.get('similarity_score', 0) > 0.75:
+                            return True
+        
+            return False
+        
+        except Exception as e:
+            print(f"⚠️ Inventory check error: {e}")
+            return True  # Default to assuming it exists
+    
     def route_after_classification(self, state: AgentState) -> str:
         """Route based on classification"""
-        query_type = state.query_classification.query_type.value
-        print(f"🚦 Routing to: {query_type}")
-        return query_type
+        classification = state.query_classification.query_type.value
+        
+        # Map UNAVAILABLE to unavailable route
+        if hasattr(state, 'unavailable_category') and state.unavailable_category:
+            return "unavailable"
+        
+        # Map PRODUCT_QUESTION
+        if classification == "product_question":
+            return "product_question"
+        
+        # Standard routing
+        route_map = {
+            "off_topic": "off_topic",
+            "vague": "vague",
+            "specific": "specific"
+        }
+        
+        route = route_map.get(classification, "specific")
+        print(f"🚦 Routing to: {route}")
+        return route
     
     def handle_off_topic_node(self, state: AgentState) -> AgentState:
         """Handle off-topic queries"""
@@ -167,7 +269,7 @@ The user asked an off-topic question: "{state.current_query}"
 Generate a polite response that:
 1. Acknowledges their question
 2. Explains you're a shopping assistant
-3. Offers to help with product recommendations
+3. Offers to help with Men & women fashion products recommendations
 4. Be friendly and helpful
 
 Examples:
@@ -186,11 +288,43 @@ Generate response:"""
         print(f"💬 Off-topic Response: {state.final_response}")
         return state
     
+    def handle_unavailable_category_node(self, state: AgentState) -> AgentState:
+        """Handle queries for unavailable categories"""
+        print(f"\n🚫 STEP: Handling Unavailable Category")
+        
+        category = getattr(state, 'unavailable_category', 'that product')
+        
+        prompt = f"""
+The user asked for: "{state.current_query}"
+Category requested: "{category}"
+
+This category is not available in our inventory.
+
+Generate a helpful response that:
+1. Politely informs them we don't have this category
+2. Suggests they try other product categories we might have
+3. Be encouraging and helpful
+4. Keep it brief
+
+Example: "I apologize, but we don't currently have {category} in our inventory. However, I can help you find other products like shoes, clothing, or watches etc. What else can I help you shop for?"
+
+Generate response:"""
+
+        try:
+            response = self.response_llm.invoke(prompt)
+            state.final_response = response.content.strip()
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            state.final_response = f"I apologize, but we don't currently have {category} available. Can I help you find something else?"
+        
+        print(f"💬 Unavailable Response: {state.final_response}")
+        return state
+    
     def handle_vague_node(self, state: AgentState) -> AgentState:
         """Handle vague queries that need clarification"""
         print(f"\n❓ STEP: Handling Vague Query")
         
-        conversation_context = self.session_manager.get_conversation_context(state.session_id, limit=6)
+        conversation_context = state.conversation_context
         
         prompt = f"""
 User has shopping intent but didn't specify gender: "{state.current_query}"
@@ -220,6 +354,104 @@ Generate a specific response for their query:"""
         print(f"💬 Vague Query Response: {state.final_response}")
         return state
     
+    def answer_product_question_node(self, state: AgentState) -> AgentState:
+        """Handle specific product questions (price, features, availability)"""
+        print(f"\n❓ STEP: Answering Product Question")
+        
+        extracted_info = state.query_classification.extracted_info
+        product_name = extracted_info.get("product_name", "")
+        brand = extracted_info.get("brand", "")
+        
+        # Build search query for the specific product
+        search_query = f"{brand} {product_name}".strip() if brand else product_name
+        if not search_query:
+            search_query = state.current_query
+        
+        print(f"🔍 Searching for product: {search_query}")
+        
+        # Search for the specific product
+        try:
+            products = self.pinecone_tool.search_similar_products(
+                query=search_query,
+                filters=None,
+                top_k=3
+            )
+            
+            if products:
+                products = self.json_fallback.enrich_products(products)
+                
+                # Get the best match
+                best_match = products[0]
+                
+                # Build detailed product info for answer
+                product_details = {
+                    "title": best_match.get("title", "Product"),
+                    "brand": best_match.get("brand", "Unknown"),
+                    "price": f"${best_match.get('price_value', 0):.2f}" if best_match.get('price_value') else "Price not available",
+                    "rating": best_match.get("stars", "N/A"),
+                    "reviews": best_match.get("reviews_count", 0),
+                    "category": best_match.get("category", ""),
+                    "description": best_match.get("description", "")
+                }
+                
+                prompt = f"""
+User asked a question about a product: "{state.current_query}"
+
+Found Product Information:
+- Title: {product_details['title']}
+- Brand: {product_details['brand']}
+- Price: {product_details['price']}
+- Rating: {product_details['rating']} stars ({product_details['reviews']} reviews)
+- Category: {product_details['category']}
+- Description: {product_details['description'][:200]}
+
+Generate a direct, helpful answer to their question using this information.
+Be conversational and specific. Answer what they asked clearly.
+
+If they asked about price, lead with the price.
+If they asked about features, focus on features from description.
+If they asked "what is" or "tell me about", give a brief overview.
+
+Keep it concise (2-3 sentences max).
+
+Answer:"""
+
+                response = self.response_llm.invoke(prompt)
+                state.final_response = response.content.strip()
+                
+                # Store product for potential display
+                ui_product = {
+                    "asin": best_match.get("asin"),
+                    "image": best_match.get("image_url") or best_match.get("thumbnail_image") or "",
+                    "title": product_details["title"],
+                    "description": product_details["brand"],
+                    "rating": float(product_details["rating"]) if product_details["rating"] != "N/A" else 0,
+                    "reviews": product_details["reviews"],
+                    "price": product_details["price"],
+                    "url": best_match.get("url") or "",
+                }
+                
+                state.search_results = {
+                    "products": products,
+                    "display_products": products[:1],
+                    "ui_products": [ui_product],
+                    "total_found": 1,
+                    "search_query": search_query,
+                    "is_question_answer": True
+                }
+                
+            else:
+                state.final_response = f"I couldn't find specific information about {search_query}. Could you provide more details or try rephrasing your question?"
+                state.search_results = {"products": [], "ui_products": [], "total_found": 0}
+                
+        except Exception as e:
+            print(f"❌ Product question error: {e}")
+            state.final_response = "I'm having trouble finding that product information. Could you try rephrasing your question?"
+            state.search_results = {"products": [], "ui_products": [], "total_found": 0}
+        
+        print(f"💬 Answer: {state.final_response}")
+        return state
+    
     def process_query_node(self, state: AgentState) -> AgentState:
         """Process specific queries with conversation context"""
         print(f"\n🔍 STEP 1: Processing Specific Query")
@@ -228,9 +460,9 @@ Generate a specific response for their query:"""
         current_query = state.current_query
         session_id = state.session_id
         
-        # Get conversation context
-        conversation_context = self.session_manager.get_conversation_context(session_id, limit=10)
-        print(f"📚 Conversation Context: {conversation_context}")
+        # Reuse context from state
+        conversation_context = state.conversation_context
+        print(f"📚 Using Cached Context")
         
         # Get user preferences
         user_preferences = self.session_manager.get_user_preferences(session_id)
@@ -238,7 +470,7 @@ Generate a specific response for their query:"""
         
         # Build enhanced query with context
         enhanced_query = self._build_contextual_query(current_query, conversation_context, user_preferences)
-        print(f"🔍 Enhanced Query: '{enhanced_query}'")
+        print(f"🔎 Enhanced Query: '{enhanced_query}'")
         
         # Process query naturally
         print("🤖 Sending to SimpleProcessor...")
@@ -250,11 +482,11 @@ Generate a specific response for their query:"""
         print(f"🎯 Final Search Query: '{final_search_query}'")
         
         # Store results
-        state.processed_query = final_search_query  # Use the processed search terms
+        state.processed_query = final_search_query
         state.original_simple_response = processed.get("natural_response", "")
         
         print(f"✅ Query processed successfully")
-        print(f"🔍 Will search for: '{final_search_query}'")
+        print(f"🔎 Will search for: '{final_search_query}'")
         
         return state
     
@@ -295,9 +527,9 @@ Generate a specific response for their query:"""
         """Search for products with proper query usage"""
         print(f"\n🔍 STEP 2: Searching Products")
         
-        # IMPORTANT: Use processed_query instead of current_query
+        # Use processed_query instead of current_query
         search_query = state.processed_query or state.current_query
-        print(f"🔍 Search Query: '{search_query}'")
+        print(f"🔎 Search Query: '{search_query}'")
         
         # Check cache first
         cached_results = self.cache_manager.get_cached_search(search_query)
@@ -320,9 +552,9 @@ Generate a specific response for their query:"""
         # Search in Pinecone with proper query
         print("🔍 Searching in Pinecone...")
         products = self.pinecone_tool.search_similar_products(
-            query=search_query,  # Use the enhanced search query
+            query=search_query,
             filters=filters,
-            top_k=10
+            top_k=15  # Get more for better filtering
         )
         
         print(f"📊 Pinecone found {len(products) if products else 0} products")
@@ -330,8 +562,7 @@ Generate a specific response for their query:"""
         # Fallback search if no results
         if not products:
             print("🔄 No results found, trying fallback search...")
-            # Try with just the category from context
-            conversation_context = self.session_manager.get_conversation_context(state.session_id, limit=6)
+            conversation_context = state.conversation_context
             user_preferences = self.session_manager.get_user_preferences(state.session_id)
             
             fallback_queries = []
@@ -350,39 +581,9 @@ Generate a specific response for their query:"""
                     print(f"📊 Fallback search '{fallback_query}' found {len(products)} products")
                     break
         
-        # Database enhancement
-        '''
-        if products:
-            print("🗃️ Enhancing with database details...")
-            asin_list = [p["asin"] for p in products]
-            try:
-                detailed_products = self.database_tool.get_products_by_ids(asin_list)
-                
-                # Merge results
-                asin_to_vector = {p["asin"]: p for p in products}
-                merged = []
-                
-                for detailed in detailed_products:
-                    asin = detailed["asin"]
-                    vector_product = asin_to_vector.get(asin)
-                    if vector_product:
-                        detailed["similarity_score"] = vector_product.get("similarity_score")
-                    merged.append(detailed)
-                
-                # Include any vector-only products
-                detailed_asins = {p["asin"] for p in detailed_products}
-                for asin, vector_product in asin_to_vector.items():
-                    if asin not in detailed_asins:
-                        merged.append(vector_product)
-
-                products = merged
-            except Exception as e:
-                print(f"⚠️ Database enhancement failed: {e}") 
-                # Continue with Pinecone results only 
-        '''
         if products:   
             products = self.json_fallback.enrich_products(products)
-            print(f"🔗 After enhancement: {len(products)} products")
+            print(f"🔗 After enrichment: {len(products)} products")
         
         # Cohere Rerank
         if products and len(products) > 1:
@@ -421,23 +622,163 @@ Generate a specific response for their query:"""
             products = self._apply_price_filters(products, price_filters)
             print(f"💰 After price filtering: {len(products)} products")
         
-        # Limit to top 3 for display
-        display_products = products[:3] if products else []
+        # Limit to top 5 for validation
+        display_products = products[:5] if products else []
         
-        # Store results
+        # Store results for validation
         search_results = {
             "products": products,
             "display_products": display_products,
             "total_found": len(products),
             "search_query": search_query,
-            "filters_applied": filters
+            "filters_applied": filters,
+            "original_query": state.current_query
         }
         
         self.cache_manager.cache_search_results(search_query, search_results, filters)
         
         state.search_results = search_results
-        print(f"✅ Search completed: {len(products)} total, showing {len(display_products)}")
+        print(f"✅ Search completed: {len(products)} total, validating top {len(display_products)}")
         
+        return state
+    
+    def validate_relevance_node(self, state: AgentState) -> AgentState:
+        """Validate if search results are relevant to user's query"""
+        print(f"\n🎯 STEP 2.5: Validating Relevance")
+        
+        search_results = state.search_results or {}
+        products = search_results.get("display_products", [])
+        original_query = state.current_query
+        
+        if not products:
+            state.relevance_status = "no_results"
+            return state
+        
+        # Build product summary for validation
+        product_summaries = []
+        for i, p in enumerate(products[:3], 1):  # Check top 3
+            summary = f"{i}. {p.get('title', 'Product')} - {p.get('brand', '')} - {p.get('category', '')} - ${p.get('price_value', 0):.2f}"
+            product_summaries.append(summary)
+        
+        prompt = f"""
+User's Query: "{original_query}"
+
+Top Search Results:
+{chr(10).join(product_summaries)}
+
+Analyze if these products match what the user is looking for. Consider:
+1. Product category match (shoes vs shirts vs other)
+2. Gender/demographic match (men vs women)
+3. Brand match (if user specified brand)
+4. General product type match
+
+Classify the match as:
+- HIGHLY_RELEVANT: Products exactly match the query
+- PARTIALLY_RELEVANT: Products are similar/related (e.g., user wanted running shoes, got sports shoes)
+- NOT_RELEVANT: Products are completely different (e.g., user wanted shirts, got shoes or unrelated items)
+- You must neeed to carefully classify the products that are unmatched to the query as NOT_RELEVANT, You can check their titles, categories, brands and prices to decide. (Mainly title or descriotion will help you decide)
+
+Return JSON:
+{{
+    "relevance": "HIGHLY_RELEVANT|PARTIALLY_RELEVANT|NOT_RELEVANT",
+    "reasoning": "brief explanation",
+    "confidence": 0.0-1.0
+}}
+"""
+
+        try:
+            print("🔤 Validating with Gemini...")
+            response = self.classifier_llm.invoke(prompt)
+            content = response.content.strip()
+            
+            if content.startswith('```json'):
+                content = content.replace('```json', '').replace('```', '').strip()
+            
+            result = json.loads(content)
+            relevance = result.get("relevance", "HIGHLY_RELEVANT")
+            
+            print(f"📊 Relevance: {relevance}")
+            print(f"💡 Reasoning: {result.get('reasoning', '')}")
+            
+            state.relevance_status = relevance.lower()
+            state.relevance_reasoning = result.get("reasoning", "")
+            
+        except Exception as e:
+            print(f"❌ Validation error: {e}")
+            # Default to relevant to continue
+            state.relevance_status = "highly_relevant"
+        
+        return state
+    
+    def route_after_validation(self, state: AgentState) -> str:
+        """Route based on relevance validation"""
+        relevance = getattr(state, 'relevance_status', 'highly_relevant')
+        
+        if relevance == "not_relevant" or relevance == "no_results":
+            print("🚦 Routing to: no_relevant_products")
+            return "no_relevant"
+        
+        print("🚦 Routing to: generate_response")
+        return "relevant"
+    
+    def handle_no_relevant_products_node(self, state: AgentState) -> AgentState:
+        """Handle case when no relevant products found"""
+        print(f"\n🚫 STEP: Handling No Relevant Products")
+        
+        relevance_status = getattr(state, 'relevance_status', 'no_results')
+        search_results = state.search_results or {}
+        products = search_results.get("display_products", [])
+        
+        if relevance_status == "no_results" or not products:
+            # No products at all
+            prompt = f"""
+User searched for: "{state.current_query}"
+No products were found.
+
+Generate a helpful response that:
+1. Apologizes for not finding products
+2. Ask them we dont have what they are looking for, can you try simething else or let me recommend some popular products
+3. Offers to help with related products
+4. Keep it brief and encouraging
+
+Response:"""
+        else:
+            # Products found but not relevant
+            reasoning = getattr(state, 'relevance_reasoning', 'Products did not match query')
+            
+            prompt = f"""
+User searched for: "{state.current_query}"
+Search returned products but they don't match what user is looking for.
+Reason: {reasoning}
+
+Generate a response that:
+1. Clearly states we couldn't find what they're looking for 
+2. Does NOT show or suggest the irrelevant products
+3. Asks them to try with different keywords or more details, or offers to search some releted products. 
+4. Be helpful and encouraging
+
+Example: "I couldn't find {state.current_query} that match your requirements. Could you try rephrasing or adding more details about what you're looking for? I'm here to help!"
+
+Response:"""
+
+        try:
+            response = self.response_llm.invoke(prompt)
+            state.final_response = response.content.strip()
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            state.final_response = f"I couldn't find {state.current_query} that match your requirements. Could you try rephrasing or providing more details?"
+        
+        # Clear products so they don't display
+        state.search_results = {
+            "products": [],
+            "display_products": [],
+            "ui_products": [],
+            "total_found": 0,
+            "search_query": state.current_query,
+            "relevance_issue": True
+        }
+        
+        print(f"💬 No Relevant Response: {state.final_response}")
         return state
     
     def _extract_price_filters(self, query: str) -> Dict[str, Any]:
@@ -494,18 +835,31 @@ Generate a specific response for their query:"""
         search_results = state.search_results or {}
         products = search_results.get("display_products", [])
         total_found = search_results.get("total_found", 0)
+        relevance_status = getattr(state, 'relevance_status', 'highly_relevant')
         
         print(f"📊 Total products found: {total_found}")
         print(f"📱 Products to display: {len(products)}")
+        print(f"🎯 Relevance: {relevance_status}")
         
-        if products:
-            conversation_context = self.session_manager.get_conversation_context(state.session_id, limit=6)
+        # Limit to top 3 for display
+        display_products = products[:3] if products else []
+        
+        if display_products:
+            conversation_context = state.conversation_context
             
             # Build product info for Gemini
             product_info = []
-            for i, p in enumerate(products, 1):
+            for i, p in enumerate(display_products, 1):
                 price_str = f"${p.get('price_value', 0):.2f}" if p.get('price_value') else "Price not available"
                 product_info.append(f"{i}. {p.get('title', 'Product')} - {p.get('brand', '')} - {price_str} - {p.get('stars', 0)} stars ({p.get('reviews_count', 0)} reviews)")
+            
+            relevance_instruction = ""
+            if relevance_status == "partially_relevant":
+                relevance_instruction = """
+IMPORTANT: These products are similar but not exactly what the user asked for.
+Acknowledge this and frame them as "similar alternatives" or "related products you might like".
+Example: "I found some similar products that might interest you:" or "Here are some related options:"
+"""
             
             prompt = f"""
 You are a helpful shopping assistant. Generate a natural, conversational response for the user's query.
@@ -513,24 +867,19 @@ You are a helpful shopping assistant. Generate a natural, conversational respons
 User's Current Query: "{state.current_query}"
 Conversation History: {conversation_context}
 
-Search Results: Found {total_found} products total, showing top {len(products)}:
+Search Results: Found {total_found} products total, showing top {len(display_products)}:
 {chr(10).join(product_info)}
 
-- Once you have the product please compare it with the query and conversation history. If the provided product fully matches the user query then Go with normal answer as below instructions, but if products are different even slightly different you need to answer that you dont have this product but find some similar products.
-For example if user ask for "more expensive" and you have only less expensive products or vise versa then you need to answer that you dont have more expensive products but find some similar products. and even do that for products miss matched. 
+{relevance_instruction}
+
 Instructions:
 - Be conversational and helpful
-- Mention the EXACT number of products being displayed ({len(products)})
+- Mention the EXACT number of products being displayed ({len(display_products)})
 - Don't mention the total found unless specifically relevant
-- If this is a follow-up query (like price filtering), acknowledge the previous context
-- Keep response concise but informative
+- If this is a follow-up query (like price filtering), acknowledge the previous context, followup query might be only 1 word like if you previously asked for gender, now user can say 'men' or 'women' or any small query
+- Keep response concise but informative (2-3 sentences max)
 - Use encouraging language
-
-- Also if user is asking some general question about product or shopping, You need to answer them as a normal question but not as a product search.
-- Find the relevant information from the conversation history and pinecone search result. because pinecone also have description of the product. So it can answer some general question about product.
-For eg If someone ask tell me about adidas Men's Daily 3.0 Skate Shoe made of? Pinecone have information in it and says, These men's adidas skate-inspired shoes have all the heritage elements coupled with modern materials and super-soft cushioning. So you need to generate answer of that
-
-Answer in a good format of paragraphing and aligning and keep that consise and to the point.
+- Format cleanly with proper spacing
 
 Generate a natural response:"""
 
@@ -542,11 +891,11 @@ Generate a natural response:"""
                 print(f"📥 Gemini Response: {response_text}")
             except Exception as e:
                 print(f"❌ Gemini error: {e}")
-                response_text = f"Here are {len(products)} great products I found for you!"
+                response_text = f"Here are {len(display_products)} great products I found for you!"
             
             # Convert to UI format
             ui_products = []
-            for p in products:
+            for p in display_products:
                 price_value = p.get("price_value")
                 price_str = f"${price_value:.2f}" if isinstance(price_value, (int, float)) and price_value else "See on Amazon"
                 
@@ -559,34 +908,17 @@ Generate a natural response:"""
                     "reviews": int(p.get("reviews_count") or 0),
                     "price": price_str,
                     "url": p.get("url") or "",
-                    "similarity_score": p.get("similarity_score", 0)
+                    "similarity_score": p.get("similarity_score", 0),
+                    "rerank_score": p.get("rerank_score", 0)
                 })
             
             search_results["ui_products"] = ui_products
+            search_results["display_products"] = display_products
             
         else:
-            conversation_context = self.session_manager.get_conversation_context(state.session_id, limit=6)
-            
-            prompt = f"""
-The user's query didn't return any products.
-
-User's Query: "{state.current_query}"
-Conversation History: {conversation_context}
-
-Generate a helpful response that:
-- Acknowledges no products were found
-- Suggests alternatives or asks for clarification
-- Is encouraging and helpful
-- References conversation history if relevant
-
-Response:"""
-
-            try:
-                gemini_response = self.response_llm.invoke(prompt)
-                response_text = gemini_response.content.strip()
-            except Exception as e:
-                print(f"❌ Gemini error: {e}")
-                response_text = "I couldn't find products matching your criteria. Could you try being more specific?"
+            # This shouldn't happen as validation should catch it, but just in case
+            response_text = "I couldn't find products matching your criteria. Could you try being more specific or using different keywords?"
+            search_results["ui_products"] = []
         
         state.search_results = search_results
         state.final_response = response_text
@@ -610,14 +942,18 @@ Response:"""
         # Get session for context
         session = self.session_manager.get_session(session_id)
         
-        # Initialize state
+        # Pre-fetch conversation context once
+        conversation_context = self.session_manager.get_conversation_context(session_id, limit=10)
+        
+        # Initialize state with pre-fetched context
         initial_state = AgentState(
             messages=session.messages,
             current_query=message,
             session_id=session_id,
             user_context={**session.context, **(user_context or {})},
             needs_clarification=False,
-            clarification_questions=[]
+            clarification_questions=[],
+            conversation_context=conversation_context  # Add to state for reuse
         )
         
         # Run the workflow
@@ -666,6 +1002,7 @@ Response:"""
                 "total_found": (search_results.get("total_found") if isinstance(search_results, dict) else None),
                 "search_query": (search_results.get("search_query") if isinstance(search_results, dict) else None),
                 "filters_applied": (search_results.get("filters_applied") if isinstance(search_results, dict) else None),
+                "relevance_status": getattr(final_state, 'relevance_status', None) if hasattr(final_state, 'relevance_status') else None,
             },
             "session_id": session_id
         }
@@ -673,7 +1010,7 @@ Response:"""
         print(f"\n📊 FINAL RESULT:")
         print(f"💬 Response: {response_text}")
         print(f"🛍️ Products: {len(ui_products) if ui_products else 0}")
-        print(f"📈 Total Found: {search_results.get('total_found', 0)}")
+        print(f"📈 Total Found: {search_results.get('total_found', 0) if isinstance(search_results, dict) else 0}")
         print(f"="*60)
         
         return result

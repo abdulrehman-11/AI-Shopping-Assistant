@@ -42,7 +42,7 @@ const generateSessionId = () => {
 };
 
 const BACKEND_URL = process.env.NODE_ENV === 'production' 
-  ? 'https://your-deployed-backend-url.com'  // Replace with your actual backend URL
+  ? 'https://ai-shopping-assistant-1.onrender.com/'  // Replace with your actual backend URL
   : 'http://localhost:8000';
 
 const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
@@ -61,8 +61,8 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
   
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
-  const [isVoiceMode, setIsVoiceMode] = useState(false);
-  const [isListening, setIsListening] = useState(false);
+  const [isVoiceActive, setIsVoiceActive] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
   const [isTTSEnabled, setIsTTSEnabled] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -153,12 +153,7 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
         addMessage('bot', data.response, products);
       }
 
-      // Text-to-speech
-      if (isTTSEnabled && 'speechSynthesis' in window && data.response) {
-        const utterance = new SpeechSynthesisUtterance(data.response);
-        utterance.rate = 0.9;
-        speechSynthesis.speak(utterance);
-      }
+      
 
     } catch (error) {
       console.error('Chat error:', error);
@@ -273,25 +268,50 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
   };
 
   const toggleVoiceMode = async () => {
-    if (!isVoiceMode) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioContextRef.current = new AudioContext();
-        analyserRef.current = audioContextRef.current.createAnalyser();
-        const source = audioContextRef.current.createMediaStreamSource(stream);
-        source.connect(analyserRef.current);
-        setIsVoiceMode(true);
-      } catch (error) {
-        console.error('Voice access denied:', error);
-      }
-    } else {
-      setIsVoiceMode(false);
-      setIsListening(false);
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-      }
+  if (!isVoiceActive) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setIsVoiceActive(true);
+      startListening(stream);
+    } catch (error) {
+      console.error('Voice access denied:', error);
     }
-  };
+  } else {
+    setIsVoiceActive(false);
+    setIsRecording(false);
+    stopListening();
+  }
+};
+
+const startListening = (stream: MediaStream) => {
+  setIsRecording(true);
+  // Here you would integrate with ElevenLabs STT
+  // For now, using Web Speech API as placeholder
+  
+  if ('webkitSpeechRecognition' in window) {
+    const recognition = new (window as any).webkitSpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+    
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      setInputValue(transcript);
+      setIsRecording(false);
+    };
+    
+    recognition.onerror = () => {
+      setIsRecording(false);
+    };
+    
+    recognition.start();
+  }
+};
+
+const stopListening = () => {
+  setIsRecording(false);
+  // Stop any active recognition
+};
 
   return (
     <Card className="fixed bottom-6 right-6 w-96 h-[600px] shadow-2xl z-50 flex flex-col animate-scale-in">
@@ -348,12 +368,17 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
                   : 'bg-muted'
               }`}>
                 <div className="text-sm">
-                  {message.text.split('\n').map((line, index) => (
+                {message.text.split('\n').map((line, index) => (
                   <p key={index} className="mb-2 last:mb-0">
-                  {line}
+                  {line.split(/(\*\*.*?\*\*)/g).map((part, partIndex) => {
+                  if (part.startsWith('**') && part.endsWith('**')) {
+                  return <strong key={partIndex}>{part.slice(2, -2)}</strong>;
+                  }
+                  return part;
+                    })}
                   </p>
                     ))}
-                    </div>
+                      </div>
 
                 
                 {/* Clarification Questions */}
@@ -430,13 +455,6 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
           <div ref={messagesEndRef} />
         </div>
 
-        {isVoiceMode && (
-          <VoiceVisualizer 
-            isListening={isListening} 
-            analyser={analyserRef.current} 
-          />
-        )}
-
         <div className="p-4 border-t">
           <div className="flex space-x-2">
             <Input
@@ -447,12 +465,16 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
               className="flex-1"
             />
             <Button
-              onClick={toggleVoiceMode}
-              variant={isVoiceMode ? "default" : "outline"}
-              size="sm"
-              className="px-3"
+           onClick={toggleVoiceMode}
+          variant={isVoiceActive ? "default" : "outline"}
+           size="sm"
+             className={`px-3 relative ${isVoiceActive ? 'bg-primary text-primary-foreground font-bold' : ''}`}
             >
-              🎤
+            {isRecording ? (
+              <div className="animate-pulse">🎤</div>
+                ) : (
+              <div className={isVoiceActive ? 'animate-bounce' : ''}>🎤</div>
+              )}
             </Button>
             <Button
               onClick={handleSendMessage}
