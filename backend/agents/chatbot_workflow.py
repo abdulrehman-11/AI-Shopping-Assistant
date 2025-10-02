@@ -127,6 +127,7 @@ Classification Rules:
    - NOTE: Missing brand, size, price is OK - only missing gender makes it vague
    - NOTE: Also note that not everything need to be gendered - e.g. "I want a laptop" is SPECIFIC, Understand the query on your own and decide either it neeed to be gendered or not
    - IMPORTANT: Extract category to check inventory
+   - Uncommon categories: jewellery, perfume, watches, accessories (for brands not typically associated with them)
    
 4. SPECIFIC: Clear shopping intent with sufficient details OR follow-up to previous specific query
    - Examples: "shoes for men", "women's dress", "nike shoes", "more expensive", "under $100", or even just 'men or women'
@@ -541,6 +542,10 @@ Answer:"""
         # Extract price filters from search query
         price_filters = self._extract_price_filters(search_query)
         print(f"💰 Price Filters: {price_filters}")
+
+        min_rating = self._extract_rating_filter(search_query)
+        if min_rating > 0:
+            print(f"⭐ Minimum Rating Filter: {min_rating}")
         
         # Build filters
         filters = {}
@@ -621,7 +626,10 @@ Answer:"""
         if price_filters and products:
             products = self._apply_price_filters(products, price_filters)
             print(f"💰 After price filtering: {len(products)} products")
-        
+        # Apply rating filter
+        if min_rating > 0 and products:
+            products = [p for p in products if float(p.get('stars', 0)) >= min_rating]
+            print(f"⭐ After rating filtering: {len(products)} products")
         # Limit to top 5 for validation
         display_products = products[:5] if products else []
         
@@ -636,6 +644,10 @@ Answer:"""
         }
         
         self.cache_manager.cache_search_results(search_query, search_results, filters)
+
+        # Store rating filter info
+        if min_rating > 0:
+            search_results["rating_filter"] = min_rating
         
         state.search_results = search_results
         print(f"✅ Search completed: {len(products)} total, validating top {len(display_products)}")
@@ -667,16 +679,17 @@ Top Search Results:
 {chr(10).join(product_summaries)}
 
 Analyze if these products match what the user is looking for. Consider:
-1. Product category match (shoes vs shirts vs other)
-2. Gender/demographic match (men vs women)
+1. Product category match (shoes vs shirts vs electronics vs jewellery)
+2. Gender/demographic match (men vs women vs kids)
 3. Brand match (if user specified brand)
 4. General product type match
 
 Classify the match as:
 - HIGHLY_RELEVANT: Products exactly match the query
 - PARTIALLY_RELEVANT: Products are similar/related (e.g., user wanted running shoes, got sports shoes)
-- NOT_RELEVANT: Products are completely different (e.g., user wanted shirts, got shoes or unrelated items)
-- You must neeed to carefully classify the products that are unmatched to the query as NOT_RELEVANT, You can check their titles, categories, brands and prices to decide. (Mainly title or descriotion will help you decide)
+- NOT_RELEVANT: Products are completely different (e.g., user wanted shirts, got shoes)
+
+IMPORTANT: Return ONLY valid JSON, no explanation before or after.  ← ADD THIS
 
 Return JSON:
 {{
@@ -690,24 +703,61 @@ Return JSON:
             print("🔤 Validating with Gemini...")
             response = self.classifier_llm.invoke(prompt)
             content = response.content.strip()
-            
-            if content.startswith('```json'):
-                content = content.replace('```json', '').replace('```', '').strip()
-            
-            result = json.loads(content)
+    
+            print(f"🔍 Raw Gemini response: {content[:200]}...")
+    
+            # Enhanced JSON extraction - handles text before/after JSON
+            json_content = content
+    
+            # Method 1: Look for ```json code blocks
+            if '```json' in content:
+                json_match = re.search(r'```json\s*(\{.*?\})\s*```', content, re.DOTALL)
+                if json_match:
+                    json_content = json_match.group(1)
+            # Method 2: Look for regular ``` blocks
+            elif '```' in content:
+                json_match = re.search(r'```\s*(\{.*?\})\s*```', content, re.DOTALL)
+                if json_match:
+                        json_content = json_match.group(1)
+            # Method 3: Find any JSON object with "relevance" key
+            else:
+                json_match = re.search(r'\{[^{}]*"relevance"[^{}]*\}', content, re.DOTALL)
+                if json_match:
+                    json_content = json_match.group(0)
+    
+            print(f"📄 Extracted JSON: {json_content[:200]}...")
+    
+            result = json.loads(json_content)
             relevance = result.get("relevance", "HIGHLY_RELEVANT")
-            
+    
             print(f"📊 Relevance: {relevance}")
             print(f"💡 Reasoning: {result.get('reasoning', '')}")
-            
+    
             state.relevance_status = relevance.lower()
             state.relevance_reasoning = result.get("reasoning", "")
-            
+
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON parsing error: {e}")
+            print(f"📄 Full content: {content if 'content' in locals() else 'No content'}")
+    
+            # Fallback: Look for keywords in the response
+            content_lower = content.lower() if 'content' in locals() else ""
+            if 'not_relevant' in content_lower or '"relevance": "not_relevant"' in content_lower:
+                print("🔍 Detected NOT_RELEVANT from keywords")
+                state.relevance_status = "not_relevant"
+                state.relevance_reasoning = "Products do not match user query"
+            elif 'partially_relevant' in content_lower or 'partially' in content_lower:
+                print("🔍 Detected PARTIALLY_RELEVANT from keywords")
+                state.relevance_status = "partially_relevant"
+                state.relevance_reasoning = "Products are similar but not exact match"
+            else:
+                print("⚠️ Defaulting to highly_relevant")
+                state.relevance_status = "highly_relevant"
+        
         except Exception as e:
             print(f"❌ Validation error: {e}")
-            # Default to relevant to continue
             state.relevance_status = "highly_relevant"
-        
+
         return state
     
     def route_after_validation(self, state: AgentState) -> str:
@@ -805,6 +855,17 @@ Response:"""
             return filters
         
         return filters
+    
+    def _extract_rating_filter(self, query: str) -> float:
+        """Extract minimum rating from query"""
+        query_lower = query.lower()
+    
+        # Match patterns like "more than 4.5 rating/ratting/stars"
+        rating_match = re.search(r'(?:more than|above|over|at least)\s+(\d+\.?\d*)\s*(?:rating|ratting|star)', query_lower)
+        if rating_match:
+            return float(rating_match.group(1))
+    
+        return 0.0
     
     def _apply_price_filters(self, products: List[Dict], price_filters: Dict) -> List[Dict]:
         """Apply price filters to products list"""
