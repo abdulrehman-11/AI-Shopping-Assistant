@@ -67,6 +67,7 @@ class AgentState(BaseModel):
     is_off_topic: bool = False
     off_topic_reason: Optional[str] = None
     original_simple_response: Optional[str] = None
+    shown_product_asins: List[str] = [] 
     
     # New fields for improvements
     conversation_context: Optional[str] = None  # Cached context to avoid multiple fetches
