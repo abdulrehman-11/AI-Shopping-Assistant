@@ -117,6 +117,17 @@ All colors MUST be HSL.
   }
 }
 
+.dot-animate::after {
+  content: '';
+  animation: dotty 1s steps(3, end) infinite;
+}
+@keyframes dotty {
+  0%, 20% { content: ''; }
+  40% { content: '.'; }
+  60% { content: '..'; }
+  80%, 100% { content: '...'; }
+}
+
 @layer base {
   * {
     @apply border-border;

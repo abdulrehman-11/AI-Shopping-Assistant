@@ -97,23 +97,21 @@ class SessionManager:
         self.save_session(session)
         return session
     
-    def get_conversation_context(self, session_id: str, limit: int = 4) -> str:
-        """Get recent conversation context with better formatting"""
+    def get_conversation_context(self, session_id: str, limit: int = 10) -> str:
+        """Get formatted conversation history for context"""
         session = self.get_session(session_id)
-        
         if not session.messages:
             return "No previous conversation."
-        
-        # Get recent messages (fewer for token efficiency)
-        recent_messages = session.messages[-limit:]
-        
+
+        recent_messages = session.messages[-limit:] if len(session.messages) > limit else session.messages
+
         context_parts = []
-        for msg in recent_messages:
-            role_label = "User" if msg.role == MessageRole.USER else "Assistant"
-            # Truncate long messages for token efficiency
-            content = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
-            context_parts.append(f"{role_label}: {content}")
-        
+        for i, msg in enumerate(recent_messages):
+            role = "User" if msg.role == MessageRole.USER else "Assistant"
+            # Truncate long messages for context
+            content = msg.content[:200] + "..." if len(msg.content) > 200 else msg.content
+            context_parts.append(f"{role}: {content}")
+
         return "\n".join(context_parts)
     
     def get_conversation_summary(self, session_id: str) -> Dict[str, Any]:

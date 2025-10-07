@@ -132,8 +132,10 @@ Classification Rules:
 4. SPECIFIC: Clear shopping intent with sufficient details OR follow-up to previous specific query
    - Examples: "shoes for men", "women's dress", "nike shoes", "more expensive", "under $100", or even just 'men or women'
    - Follow-ups are SPECIFIC if previous context has gender 
-
+   - IMPORTANT: If user says "No [X], I want [Y]", classify as SPECIFIC and extract [Y] as the actual query
+   - Example: "No laptop bags, I want laptops" -> SPECIFIC, extract "laptops"
 Consider conversation context - if user previously specified gender, follow-ups are SPECIFIC.
+Note: Make sure you process query by considering spelling mistakes, becuase sometimes there is a spelling mistake that you need to understand & correct 
 
 Return JSON:
 {{
@@ -333,12 +335,12 @@ Conversation History: {conversation_context}
 
 Generate a helpful response that:
 1. Acknowledges their interest
-2. Asks specifically about gender (men/women/kids)
+2. Asks specifically about gender (men/women)
 3. Can suggest popular options
 4. Be encouraging and specific to their query
 
 Examples:
-- For "I want shoes": "I'd love to help you find the perfect shoes! Are you looking for shoes for men, women, or kids? Once I know that, I can show you some great options."
+- For "I want shoes": "I'd love to help you find the perfect shoes! Are you looking for shoes for men, women Once I know that, I can show you some great options."
 - For "need a watch": "Great choice! Watches make excellent purchases. Are you shopping for a men's watch, women's watch, or perhaps for a child? Let me know and I'll find some perfect options for you."
 
 Generate a specific response for their query:"""
@@ -349,7 +351,7 @@ Generate a specific response for their query:"""
             state.needs_clarification = True
         except Exception as e:
             print(f"❌ Error generating vague response: {e}")
-            state.final_response = "I'd be happy to help you find what you're looking for! Could you let me know if you're shopping for men, women, or kids?"
+            state.final_response = "I'd be happy to help you find what you're looking for! Could you let me know if you're shopping for men, women?"
             state.needs_clarification = True
         
         print(f"💬 Vague Query Response: {state.final_response}")
@@ -493,35 +495,57 @@ Answer:"""
     
     def _build_contextual_query(self, current_query: str, context: str, preferences: Dict) -> str:
         """Build enhanced query with conversation context"""
-        
+    
         current_lower = current_query.lower()
-        
-        # Common follow-up patterns
-        price_patterns = [r'more than \$?(\d+)', r'under \$?(\d+)', r'between \$?(\d+)', r'expensive', r'cheap', r'budget']
-        brand_patterns = [r'\b(nike|adidas|puma|reebok|asics|new balance|under armour)\b']
-        category_patterns = [r'\b(shoes|sneakers|boots|sandals|running|basketball)\b']
-        
-        is_followup = any(re.search(pattern, current_lower) for pattern in price_patterns + brand_patterns + category_patterns)
-        
+       
+        # Check for negation patterns (no, not, don't want, etc.)
+        negation_patterns = [r'\bno\b', r'\bnot\b', r"don't want", r"don't need", r"instead"]
+        has_negation = any(re.search(pattern, current_lower) for pattern in negation_patterns)
+       
+        # If user is negating or correcting, prioritize current query
+        if has_negation:
+            # Extract what they DO want after negation
+            if 'want' in current_lower:
+                parts = current_lower.split('want')
+                if len(parts) > 1:
+                    return parts[-1].strip()
+            elif 'need' in current_lower:
+                parts = current_lower.split('need')
+                if len(parts) > 1:
+                    return parts[-1].strip()
+            return current_query  # Use query as-is for negations
+       
+        # For normal follow-ups, enhance with context
+        is_followup = len(current_query.split()) <= 3  # Short queries are likely follow-ups
+       
         if is_followup and context and "No previous conversation" not in context:
-            # Extract context from conversation
             prev_category = preferences.get('categories', [])
             prev_brands = preferences.get('brands', [])
             prev_gender = preferences.get('gender', '')
-            
+           
+            # Build contextual query
             enhanced_parts = []
-            if prev_brands:
+           
+            # Check if current query is just gender
+            if current_lower in ['men', 'women', 'unisex']:
+                if prev_category:
+                    return f"{prev_category[0]} for {current_lower}"
+           
+            # Check if it's a category change
+            category_keywords = ['shoes', 'cloths', 'clothes', 'shirts', 'pants', 'bags', 'watches']
+            if any(keyword in current_lower for keyword in category_keywords):
+                if prev_gender:
+                    return f"{current_query} for {prev_gender}"
+           
+            # Default enhancement
+            if prev_brands and not any(brand.lower() in current_lower for brand in prev_brands):
                 enhanced_parts.append(prev_brands[0])
-            if prev_category:
-                enhanced_parts.append(prev_category[0])
-            if prev_gender:
+            if prev_gender and prev_gender not in current_lower:
                 enhanced_parts.append(f"for {prev_gender}")
-            
             enhanced_parts.append(current_query)
-            
-            enhanced_query = " ".join(enhanced_parts)
-            return enhanced_query
-        
+           
+            return " ".join(enhanced_parts)
+       
         return current_query
     
     def search_products_node(self, state: AgentState) -> AgentState:
@@ -680,7 +704,7 @@ Top Search Results:
 
 Analyze if these products match what the user is looking for. Consider:
 1. Product category match (shoes vs shirts vs electronics vs jewellery)
-2. Gender/demographic match (men vs women vs kids)
+2. Gender/demographic match (men vs women)
 3. Brand match (if user specified brand)
 4. General product type match
 
@@ -785,10 +809,12 @@ Return JSON:
 User searched for: "{state.current_query}"
 No products were found.
 
+Previous context: {state.conversation_context}
+
 Generate a helpful response that:
-1. Apologizes for not finding products
-2. Ask them we dont have what they are looking for, can you try simething else or let me recommend some popular products
-3. Offers to help with related products
+1. Clearly states: "I couldn't find any [EXACT PRODUCT TYPE] that match your request"
+2. If this was a correction (user said "no X, I want Y"), acknowledge: "I understand you're looking for Y, not X"
+3. Suggest they try different keywords or ask what specific type they need
 4. Keep it brief and encouraging
 
 Response:"""
@@ -903,8 +929,21 @@ Response:"""
         print(f"🎯 Relevance: {relevance_status}")
         
         # Limit to top 3 for display
-        display_products = products[:3] if products else []
-        
+        # Extract requested number from query
+        import re
+        query_lower = state.current_query.lower()
+        number_match = re.search(r'\b(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\b', query_lower)
+        requested_count = 3  # default
+
+        if number_match:
+            num_word = number_match.group(1)
+            word_to_num = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 
+                    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10}
+            requested_count = word_to_num.get(num_word, int(num_word) if num_word.isdigit() else 3)
+
+        # Limit to requested number for display
+        display_products = products[:requested_count] if products else []
+        print ("display_products = ",display_products)
         if display_products:
             conversation_context = state.conversation_context
             

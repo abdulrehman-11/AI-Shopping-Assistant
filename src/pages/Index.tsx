@@ -101,19 +101,13 @@ const Index = () => {
             Shop smarter with our AI-powered shopping assistant. Find the perfect products 
             from thousands of options, get personalized recommendations, and enjoy seamless Amazon shopping.
           </p>
-          <div className="flex justify-center space-x-4 animate-fade-in">
+          <div className="flex justify-center animate-fade-in">
             <Button 
               size="lg" 
-              className="bg-white text-primary hover:bg-gray-100 px-8 py-3 text-lg font-semibold"
+              className="backdrop-blur-md bg-white/20 border border-white/30 text-white hover:bg-white/30 hover:scale-105 hover:shadow-2xl px-12 py-3 text-lg font-semibold transition-all duration-300 ease-in-out"
+              onClick={() => setIsChatOpen(true)}
             >
-              Start Shopping
-            </Button>
-            <Button 
-            size="lg" 
-            className="backdrop-blur-md bg-white/20 border border-white/30 text-white hover:bg-white/30 hover:scale-105 hover:shadow-2xl px-8 py-3 text-lg font-semibold transition-all duration-300 ease-in-out"
-            onClick={() => setIsChatOpen(true)}
-            >
-            Try AI Assistant
+              Try AI Assistant
             </Button>
           </div>
         </div>

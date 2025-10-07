@@ -26,7 +26,11 @@ interface ProductCardProps {
 
 const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
   const handleProductClick = () => {
-    window.open(product.url, '_blank', 'noopener,noreferrer');
+    const hasValidUrl = product.url && product.url !== '#' && product.url.trim().length > 0;
+    const fallbackAmazonUrl = product.asin ? `https://www.amazon.com/dp/${product.asin}` : '';
+    const urlToOpen = hasValidUrl ? product.url : fallbackAmazonUrl;
+    if (!urlToOpen) return;
+    window.open(urlToOpen, '_blank', 'noopener,noreferrer');
   };
 
   const renderStars = (rating?: number) => {
@@ -67,10 +71,14 @@ const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
     <Card className="group overflow-hidden bg-card shadow-card hover:shadow-hover transition-all duration-300 transform hover:-translate-y-1 cursor-pointer">
       <div className="relative aspect-square overflow-hidden">
         <img
-          src={product.thumbnailImage}
+          src={product.thumbnailImage || '/placeholder.svg'}
           alt={product.title}
           className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
           loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={(e) => {
+            (e.target as HTMLImageElement).src = '/placeholder.svg';
+          }}
         />
         {product.brand && (
           <Badge className="absolute top-2 left-2 bg-primary text-primary-foreground">

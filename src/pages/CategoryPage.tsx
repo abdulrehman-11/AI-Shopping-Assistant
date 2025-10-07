@@ -119,7 +119,6 @@ const CategoryPage = () => {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center space-x-2">
               <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
-              <span className="font-medium">Filters & Sort:</span>
             </div>
             
             <div className="flex flex-wrap items-center space-x-4">
