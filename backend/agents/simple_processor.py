@@ -59,6 +59,8 @@ Be smart about context:
 - Extract price filters like "more than $100", "under $50", "between $50-100"
 
 Focus on creating the best possible search query by combining current query with relevant context.
+
+Note: Make sure you process query by undersatnding becuase sometimes there is a spelling mistake that you need to understand & correct 
 """
         
         try:

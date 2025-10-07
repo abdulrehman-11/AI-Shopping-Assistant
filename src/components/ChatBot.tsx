@@ -27,15 +27,22 @@ interface Message {
   products?: Product[];
   needsClarification?: boolean;
   clarificationQuestions?: string[];
+  pending?: boolean; // <-- Add this line
 }
 
 interface ChatBotProps {
   onClose: () => void;
 }
 
-// Generate consistent session ID
-const generateSessionId = () => {
-  // Create new session for each page load to ensure fresh conversations
+// Generate or retrieve persistent session ID
+const getOrCreateSessionId = () => {
+  // Check if we already have a session ID
+  const existingId = localStorage.getItem('chatbot_session_id');
+  if (existingId) {
+    return existingId;
+  }
+  
+  // Only create new if doesn't exist
   const newId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   localStorage.setItem('chatbot_session_id', newId);
   return newId;
@@ -46,18 +53,19 @@ const BACKEND_URL = process.env.NODE_ENV === 'production'
   : 'http://localhost:8000';
 
 const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
-  const [sessionId] = useState(generateSessionId());
-  const [messages, setMessages] = useState<Message[]>(() => {
-    const saved = localStorage.getItem(`chatMessages_${generateSessionId()}`);
-    return saved ? JSON.parse(saved) : [
-      {
-        id: 1,
-        type: 'bot',
-        text: "Hi! I'm your AI shopping assistant. I can help you find products using advanced semantic search. What are you looking for today?",
-        timestamp: new Date().toISOString()
-      }
-    ];
-  });
+  const [sessionId] = useState(getOrCreateSessionId());
+    const [messages, setMessages] = useState<Message[]>(() => {
+      const currentSessionId = getOrCreateSessionId();
+      const saved = localStorage.getItem(`chatMessages_${currentSessionId}`);
+      return saved ? JSON.parse(saved) : [
+    {
+      id: 1,
+      type: 'bot',
+      text: "Hi! I'm your AI shopping assistant. I can help you find products using advanced semantic search. What are you looking for today?",
+      timestamp: new Date().toISOString()
+    }
+  ];
+});
   
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -80,6 +88,41 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
     localStorage.setItem(`chatMessages_${sessionId}`, JSON.stringify(messages));
     scrollToBottom();
   }, [messages, sessionId]);
+
+  useEffect(() => {
+  // If there is a pending bot message, retry fetching the answer
+  const lastPending = messages.find(m => m.pending && m.type === 'bot');
+  const lastUser = [...messages].reverse().find(m => m.type === 'user');
+  if (lastPending && lastUser) {
+    setIsTyping(true);
+    fetch(`${BACKEND_URL}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: lastUser.text,
+        session_id: sessionId,
+      }),
+    })
+      .then(res => res.json())
+      .then(data => {
+        setMessages(prev =>
+          prev.map(msg =>
+            msg.pending
+              ? {
+                  ...msg,
+                  text: data.response,
+                  products: data.ui_products || [],
+                  pending: false,
+                }
+              : msg
+          )
+        );
+        setIsTyping(false);
+      })
+      .catch(() => setIsTyping(false));
+  }
+  // eslint-disable-next-line
+}, []);
 
   const checkBackendConnection = async () => {
     try {
@@ -112,59 +155,102 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
   };
 
   const handleSendMessage = async () => {
-    if (!inputValue.trim()) return;
+  if (!inputValue.trim()) return;
 
-    const userMessage = inputValue.trim();
-    addMessage('user', userMessage);
-    setIsTyping(true);
-    setInputValue('');
-
-    try {
-      if (!isConnected) {
-        // Fallback to mock response if backend is not available
-        handleMockResponse(userMessage);
-        return;
-      }
-
-      const response = await fetch(`${BACKEND_URL}/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          message: userMessage,
-          session_id: sessionId,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      
-      // Handle clarification questions
-      if (data.needs_clarification && data.clarification_questions?.length > 0) {
-        const questionText = data.response || "I need some clarification:";
-        addMessage('bot', questionText, undefined, true, data.clarification_questions);
-      } else {
-        // Handle regular response with products
-        const products = data.ui_products || [];
-        addMessage('bot', data.response, products);
-      }
-
-      
-
-    } catch (error) {
-      console.error('Chat error:', error);
-      addMessage('bot', "I'm having trouble connecting to my brain right now. Let me try a simple search for you.");
-      
-      // Fallback to simple search
-      handleMockResponse(userMessage);
-    } finally {
-      setIsTyping(false);
+  const userMessage = inputValue.trim();
+  addMessage('user', userMessage);
+  const pendingBotMsgId = Date.now() + 1;
+  setMessages(prev => [
+    ...prev,
+    {
+      id: pendingBotMsgId,
+      type: 'bot',
+      text: "Thinking...",
+      timestamp: new Date().toISOString(),
+      pending: true
     }
-  };
+  ]);
+  setIsTyping(true);
+  setInputValue('');
+
+  let timeoutId: NodeJS.Timeout | null = null;
+
+  try {
+    if (!isConnected) {
+      handleMockResponse(userMessage);
+      return;
+    }
+
+
+
+    const response = await fetch(`${BACKEND_URL}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        message: userMessage,
+        session_id: sessionId,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    clearTimeout(timeoutId);
+
+    if (data.needs_clarification && data.clarification_questions?.length > 0) {
+      const questionText = data.response || "I need some clarification:";
+      setMessages(prev =>
+        prev.map(msg =>
+          msg.pending
+            ? {
+                ...msg,
+                text: questionText,
+                needsClarification: true,
+                clarificationQuestions: data.clarification_questions,
+                pending: false
+              }
+            : msg
+        )
+      );
+    } else {
+      const products = data.ui_products || [];
+      setMessages(prev =>
+        prev.map(msg =>
+          msg.pending
+            ? {
+                ...msg,
+                text: data.response,
+                products,
+                pending: false
+              }
+            : msg
+        )
+      );
+    }
+  } catch (error) {
+    clearTimeout(timeoutId);
+    setMessages(prev =>
+      prev.map(msg =>
+        msg.pending
+          ? {
+              ...msg,
+              text: "Sorry, we are facing some issues. Please try again after some time. Thanks!",
+              pending: false
+            }
+          : msg
+      )
+    );
+    setIsTyping(false);
+  } finally {
+    setIsTyping(false);
+  }
+};
+
 
   // Improved fallback method for when backend is unavailable
   const handleMockResponse = async (userQuery: string) => {
@@ -239,6 +325,10 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
       // Clear local storage
       localStorage.removeItem(`chatMessages_${sessionId}`);
       localStorage.removeItem('chatbot_session_id');
+
+      // Generate new session ID
+      const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      localStorage.setItem('chatbot_session_id', newSessionId);
       
       // Reset messages
       setMessages([
@@ -249,9 +339,11 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
           timestamp: new Date().toISOString()
         }
       ]);
+      // Reload to apply new session
+      window.location.reload();
+
       
       // Generate new session ID
-      const newSessionId = generateSessionId();
       
     } catch (error) {
       console.error('Clear chat error:', error);
@@ -440,17 +532,9 @@ const stopListening = () => {
             </div>
           ))}
           
-          {isTyping && (
-            <div className="flex justify-start">
-              <div className="bg-muted p-3 rounded-lg">
-                <div className="flex space-x-1">
-                  <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" />
-                  <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0.1s' }} />
-                  <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
-                </div>
-              </div>
-            </div>
-          )}
+
+
+
           
           <div ref={messagesEndRef} />
         </div>
@@ -471,18 +555,19 @@ const stopListening = () => {
              className={`px-3 relative ${isVoiceActive ? 'bg-primary text-primary-foreground font-bold' : ''}`}
             >
             {isRecording ? (
-              <div className="animate-pulse">🎤</div>
+              <div className="animate-pulse">֎</div>
                 ) : (
-              <div className={isVoiceActive ? 'animate-bounce' : ''}>🎤</div>
+              <div className={isVoiceActive ? 'animate-bounce' : ''}>֎</div>
               )}
             </Button>
             <Button
-              onClick={handleSendMessage}
-              size="sm"
-              className="bg-gradient-primary hover:opacity-90"
-            >
-              Send
-            </Button>
+  onClick={handleSendMessage}
+  size="sm"
+  className="bg-gradient-primary hover:opacity-90"
+  disabled={isTyping}
+>
+  Send
+</Button>
           </div>
         </div>
       </CardContent>

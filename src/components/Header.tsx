@@ -2,7 +2,7 @@ import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Search, ShoppingCart, User, Menu } from 'lucide-react';
+import { Search, Menu } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -12,6 +12,7 @@ const Header = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSheetOpen, setIsSheetOpen] = useState(false);
 
   const handleSearch = () => {
     if (searchQuery.trim()) {
@@ -51,23 +52,14 @@ const Header = () => {
                      </div>
                      </div>
 
-          {/* Right side buttons */}
-          <div className="flex items-center space-x-4">
-            <Button variant="ghost" size="sm" className="flex items-center space-x-2">
-              <User className="h-4 w-4" />
-              <span className="hidden md:inline">Account</span>
-            </Button>
-            <Button variant="ghost" size="sm" className="flex items-center space-x-2">
-              <ShoppingCart className="h-4 w-4" />
-              <span className="hidden md:inline">Cart</span>
-            </Button>
-          </div>
+          {/* Right side kept minimal intentionally */}
+          <div className="flex items-center space-x-4" />
         </div>
 
         {/* Navigation */}
         <nav className="py-2 border-t border-border">
           <div className="flex items-center space-x-8 overflow-x-auto">
-            <Sheet>
+            <Sheet open={isSheetOpen} onOpenChange={setIsSheetOpen}>
   <SheetTrigger asChild>
     <Button
       variant="ghost"
@@ -85,7 +77,7 @@ const Header = () => {
       
       <div className="space-y-2">
         {/* Category links */}
-        <Link to="/category/men-bags" className="block">
+        <Link to="/category/men-bags" className="block" onClick={() => setIsSheetOpen(false)}>
           <div className="flex items-center space-x-3 p-3 rounded-lg hover:bg-muted transition-colors border border-primary/20">
             <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center">👜</div>
             <div>
@@ -95,7 +87,7 @@ const Header = () => {
           </div>
         </Link>
 
-        <Link to="/category/men-jewelry" className="block">
+        <Link to="/category/men-jewelry" className="block" onClick={() => setIsSheetOpen(false)}>
           <div className="flex items-center space-x-3 p-3 rounded-lg hover:bg-muted transition-colors border border-primary/20">
             <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center">💍</div>
             <div>
@@ -105,7 +97,7 @@ const Header = () => {
           </div>
         </Link>
 
-        <Link to="/category/men-shoes" className="block">
+        <Link to="/category/men-shoes" className="block" onClick={() => setIsSheetOpen(false)}>
           <div className="flex items-center space-x-3 p-3 rounded-lg hover:bg-muted transition-colors border border-primary/20">
             <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center">👟</div>
             <div>
@@ -115,7 +107,7 @@ const Header = () => {
           </div>
         </Link>
 
-        <Link to="/category/men-clothing" className="block">
+        <Link to="/category/men-clothing" className="block" onClick={() => setIsSheetOpen(false)}>
           <div className="flex items-center space-x-3 p-3 rounded-lg hover:bg-muted transition-colors border border-primary/20">
             <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center">👕</div>
             <div>
@@ -125,7 +117,7 @@ const Header = () => {
           </div>
         </Link>
 
-        <Link to="/category/nike-shoes" className="block">
+        <Link to="/category/nike-shoes" className="block" onClick={() => setIsSheetOpen(false)}>
           <div className="flex items-center space-x-3 p-3 rounded-lg hover:bg-muted transition-colors border border-primary/20">
             <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center">👟</div>
             <div>
@@ -135,7 +127,7 @@ const Header = () => {
           </div>
         </Link>
 
-        <Link to="/category/women-clothing" className="block">
+        <Link to="/category/women-clothing" className="block" onClick={() => setIsSheetOpen(false)}>
           <div className="flex items-center space-x-3 p-3 rounded-lg hover:bg-muted transition-colors border border-primary/20">
             <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center">👗</div>
             <div>
