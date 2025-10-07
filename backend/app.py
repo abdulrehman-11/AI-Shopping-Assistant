@@ -24,7 +24,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",  # React dev server
         "http://localhost:8080",  # Vite dev server
-        "https://*.lovableproject.com",  # Lovable production
+        "https://ai-shopping-assistant-eight.vercel.app",  
         "*"  # Allow all for development
     ],
     allow_credentials=True,
