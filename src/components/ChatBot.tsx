@@ -1,15 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, MessageCircle, Volume2, VolumeX, Trash2 } from 'lucide-react';
+import { X, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import VoiceVisualizer from './VoiceVisualizer';
 import ProductCard from './ProductCard';
 
 interface Product {
   asin: string;
-  image: string;
+  image?: string;
+  thumbnailImage?: string;
+  image_url?: string;
   title: string;
   description: string;
   rating: number;
@@ -69,14 +70,8 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
   
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
-  const [isVoiceActive, setIsVoiceActive] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isTTSEnabled, setIsTTSEnabled] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
 
   // Check backend connection on mount
   useEffect(() => {
@@ -295,7 +290,7 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
         // Convert to UI format
         const products: Product[] = suggestedProducts.map(p => ({
           asin: p.asin || `mock_${Date.now()}`,
-          image: p.thumbnailImage || p.image || '',
+          image: p.thumbnailImage || p.image || p.image_url || '',
           title: p.title,
           description: p.brand || p.category || '',
           rating: p.stars || 0,
@@ -359,51 +354,6 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
     }
   };
 
-  const toggleVoiceMode = async () => {
-  if (!isVoiceActive) {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      setIsVoiceActive(true);
-      startListening(stream);
-    } catch (error) {
-      console.error('Voice access denied:', error);
-    }
-  } else {
-    setIsVoiceActive(false);
-    setIsRecording(false);
-    stopListening();
-  }
-};
-
-const startListening = (stream: MediaStream) => {
-  setIsRecording(true);
-  // Here you would integrate with ElevenLabs STT
-  // For now, using Web Speech API as placeholder
-  
-  if ('webkitSpeechRecognition' in window) {
-    const recognition = new (window as any).webkitSpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.lang = 'en-US';
-    
-    recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      setInputValue(transcript);
-      setIsRecording(false);
-    };
-    
-    recognition.onerror = () => {
-      setIsRecording(false);
-    };
-    
-    recognition.start();
-  }
-};
-
-const stopListening = () => {
-  setIsRecording(false);
-  // Stop any active recognition
-};
 
   return (
     <Card className="fixed bottom-6 right-6 w-96 h-[600px] shadow-2xl z-50 flex flex-col animate-scale-in">
@@ -422,14 +372,6 @@ const stopListening = () => {
         </div>
         
         <div className="flex items-center space-x-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setIsTTSEnabled(!isTTSEnabled)}
-            className="h-8 w-8 p-0"
-          >
-            {isTTSEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
-          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -497,11 +439,14 @@ const stopListening = () => {
                       <div key={index} className="bg-card p-2 rounded border">
                         <div className="flex items-center space-x-2">
                           <img 
-                            src={product.image || '/placeholder.svg'} 
+                            src={product.image || product.thumbnailImage || product.image_url || '/placeholder.svg'} 
                             alt={product.title}
                             className="w-12 h-12 object-cover rounded"
                             onError={(e) => {
-                              (e.target as HTMLImageElement).src = '/placeholder.svg';
+                              const target = e.target as HTMLImageElement;
+                              if (target.src !== '/placeholder.svg') {
+                                target.src = '/placeholder.svg';
+                              }
                             }}
                           />
                           <div className="flex-1 min-w-0">
@@ -549,25 +494,13 @@ const stopListening = () => {
               className="flex-1"
             />
             <Button
-           onClick={toggleVoiceMode}
-          variant={isVoiceActive ? "default" : "outline"}
-           size="sm"
-             className={`px-3 relative ${isVoiceActive ? 'bg-primary text-primary-foreground font-bold' : ''}`}
+              onClick={handleSendMessage}
+              size="sm"
+              className="bg-gradient-primary hover:opacity-90"
+              disabled={isTyping}
             >
-            {isRecording ? (
-              <div className="animate-pulse">֎</div>
-                ) : (
-              <div className={isVoiceActive ? 'animate-bounce' : ''}>֎</div>
-              )}
+              Send
             </Button>
-            <Button
-  onClick={handleSendMessage}
-  size="sm"
-  className="bg-gradient-primary hover:opacity-90"
-  disabled={isTyping}
->
-  Send
-</Button>
           </div>
         </div>
       </CardContent>

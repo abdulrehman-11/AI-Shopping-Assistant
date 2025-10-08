@@ -108,51 +108,51 @@ class ChatbotWorkflow:
         conversation_context = state.conversation_context
         
         prompt = f"""
-Classify this user query for an e-commerce shopping assistant.
-
-Current Query: "{state.current_query}"
-Conversation History: {conversation_context}
-
-Classification Rules:
-1. OFF_TOPIC: Not related to shopping, products, or e-commerce
-   - Examples: "What is China?", "How to cook pasta?", "What's the weather?"
-   
-2. PRODUCT_QUESTION: Asking for information about specific product (not browsing/buying)
-   - Examples: "What is the price of Nike Air Max?", "Tell me about Adidas Ultraboost", 
-               "Is Sony headphone waterproof?", "What colors available for iPhone 14?"
-   - Key indicators: "what is", "tell me about", "how much", "what color", "describe"
-   
-3. VAGUE: Shopping/buying intent but missing critical info (GENDER for clothing/shoes/accessories)
-   - Examples: "I want shoes", "looking for clothes", "need a watch"
-   - NOTE: Missing brand, size, price is OK - only missing gender makes it vague
-   - NOTE: Also note that not everything need to be gendered - e.g. "I want a laptop" is SPECIFIC, Understand the query on your own and decide either it neeed to be gendered or not
-   - IMPORTANT: Extract category to check inventory
-   - Uncommon categories: jewellery, perfume, watches, accessories (for brands not typically associated with them)
-   
-4. SPECIFIC: Clear shopping intent with sufficient details OR follow-up to previous specific query
-   - Examples: "shoes for men", "women's dress", "nike shoes", "more expensive", "under $100", or even just 'men or women'
-   - Follow-ups are SPECIFIC if previous context has gender 
-   - IMPORTANT: If user says "No [X], I want [Y]", classify as SPECIFIC and extract [Y] as the actual query
-   - Example: "No laptop bags, I want laptops" -> SPECIFIC, extract "laptops"
-Consider conversation context - if user previously specified gender, follow-ups are SPECIFIC.
-Note: Make sure you process query by considering spelling mistakes, becuase sometimes there is a spelling mistake that you need to understand & correct 
-
-Return JSON:
-{{
-    "classification": "OFF_TOPIC|PRODUCT_QUESTION|VAGUE|SPECIFIC",
-    "confidence": 0.0-1.0,
-    "reasoning": "explanation of classification",
-    "extracted_info": {{
-        "category": "extracted product category (shoes, shirt, laptop, etc.)",
-        "brand": "extracted brand if mentioned",
-        "product_name": "specific product name if asking about it",
-        "has_gender": true/false,
-        "is_question": true/false,
-        "is_followup": true/false
+    Classify this user query for an e-commerce shopping assistant.
+    
+    Current Query: "{state.current_query}"
+    Conversation History: {conversation_context}
+    
+    Classification Rules:
+    1. OFF_TOPIC: Not related to shopping, products, or e-commerce
+       - Examples: "What is China?", "How to cook pasta?", "What's the weather?"
+    
+    2. PRODUCT_QUESTION: Asking for information about specific product (not browsing/buying)
+       - Examples: "What is the price of Nike Air Max?", "Tell me about Adidas Ultraboost", 
+                   "Is Sony headphone waterproof?", "What colors available for iPhone 14?"
+       - Key indicators: "what is", "tell me about", "how much", "what color", "describe"
+    
+    3. VAGUE: Shopping/buying intent but missing critical info (GENDER for clothing/shoes/accessories): Gender means men/women/unisex and relevant keywords are also considered as gender, So if these keywords available in query then it is not vague but if not then it is vague. But make sure, Not every query need to be gendered.
+       - Examples: "I want shoes", "looking for clothes", "need a watch"
+       - NOTE: Missing brand, size, price is OK - only missing gender makes it vague
+       - NOTE: Also note that not everything need to be gendered - e.g. "I want a laptop", "I want to buy something for my wife", This is also gendered query. Because wife is female etc So understand these query as SPECIFIC not VAGUE, Understand the query on your own and decide either it neeed to be gendered or not
+       - IMPORTANT: Extract category to check inventory
+       - Uncommon categories: jewellery, perfume, watches, accessories (for brands not typically associated with them)
+    
+    4. SPECIFIC: Clear shopping intent with sufficient details OR follow-up to previous specific query
+       - Examples: "shoes for men", "women's dress", "nike shoes", "more expensive", "under $100", "dress for unisex" or even just 'men or women'
+       - Follow-ups are SPECIFIC if previous context has gender 
+       - IMPORTANT: If user says "No [X], I want [Y]", classify as SPECIFIC and extract [Y] as the actual query
+       - Example: "No laptop bags, I want laptops" -> SPECIFIC, extract "laptops"
+    Consider conversation context - if user previously specified gender, follow-ups are SPECIFIC.
+    Note: Make sure you process query by considering spelling mistakes, becuase sometimes there is a spelling mistake that you need to understand & correct 
+    
+    Return JSON:
+    {{
+        "classification": "OFF_TOPIC|PRODUCT_QUESTION|VAGUE|SPECIFIC",
+        "confidence": 0.0-1.0,
+        "reasoning": "explanation of classification",
+        "extracted_info": {{
+            "category": "extracted product category (shoes, shirt, laptop, etc.)",
+            "brand": "extracted brand if mentioned",
+            "product_name": "specific product name if asking about it",
+            "has_gender": true/false,
+            "is_question": true/false,
+            "is_followup": true/false
+        }}
     }}
-}}
-"""
-
+    """
+    
         try:
             print("🔤 Sending to Gemini classifier...")
             response = self.classifier_llm.invoke(prompt)
@@ -178,6 +178,8 @@ Return JSON:
                         print(f"❌ Category '{category}' not available in inventory")
                         classification_type = "UNAVAILABLE"
                         state.unavailable_category = category
+                    else:
+                        print(f"✅ Category '{category}' found in inventory")
             
             query_classification = QueryClassification(
                 query_type=QueryType(classification_type.lower()),
@@ -200,41 +202,59 @@ Return JSON:
             )
         
         return state
+
     
     def _quick_inventory_check(self, category: str) -> bool:
         """Quick check if category exists - using better search strategy"""
         try:
-            # Search with category + common descriptors to get better results
-            test_queries = [
-                category,
-                f"{category} products",
-                f"buy {category}",
-            ]
-        
-            for query in test_queries:
+            # Handle spelling variations and compound terms
+            category_lower = category.lower()
+
+            # Common spelling variations
+            spelling_variations = {
+                'jewellery': ['jewelry', 'jewellery', 'jewellry', 'jewelery'],
+                'jewelry': ['jewelry', 'jewellery', 'jewellry', 'jewelery'],
+                'dress shoes': ['dress shoes', 'formal shoes', 'oxford', 'loafers', 'shoes'],
+                'tshirt': ['tshirt', 't-shirt', 'tee', 'shirt'],
+                'unisex': ['unisex', 'men women', 'both genders']
+            }
+
+            # Get variations to search
+            search_terms = spelling_variations.get(category_lower, [category_lower])
+            if category_lower not in search_terms:
+                search_terms.append(category_lower)
+
+            # Also add partial matches for compound terms
+            if ' ' in category_lower:
+                # For "dress shoes", also search "shoes"
+                parts = category_lower.split()
+                search_terms.extend(parts)
+
+            # Search with multiple variations
+            for search_term in search_terms:
                 products = self.pinecone_tool.search_similar_products(
-                    query=query,
+                    query=search_term,
                     filters=None,
-                    top_k=5  # Get top 5 to verify quality
-            )
-            
+                    top_k=10  # Get more to verify
+                )
+
                 if products and len(products) > 0:
-                    # Verify at least one product has decent similarity
-                    # and title/category somewhat matches
+                    # More lenient matching - check if any product is relevant
                     for p in products:
                         title = (p.get('title', '') or '').lower()
                         cat = (p.get('category', '') or '').lower()
-                    
-                        # Check if category word appears in title or category field
-                        if category.lower() in title or category.lower() in cat:
+
+                        # Check for any of the search variations
+                        for variant in search_terms:
+                            if variant in title or variant in cat:
+                                return True
+
+                        # High similarity score means it's probably relevant
+                        if p.get('similarity_score', 0) > 0.65:  # Lower threshold
                             return True
-                    
-                        # Or if similarity is very high (>0.75), trust it
-                        if p.get('similarity_score', 0) > 0.75:
-                            return True
-        
+
             return False
-        
+
         except Exception as e:
             print(f"⚠️ Inventory check error: {e}")
             return True  # Default to assuming it exists
@@ -330,7 +350,7 @@ Generate response:"""
         conversation_context = state.conversation_context
         
         prompt = f"""
-User has shopping intent but didn't specify gender: "{state.current_query}"
+User has shopping intent but didn't specify gender: (Gender means men/women/unisex and relevant keywords like boy/girl or other relvant etc are also considered as gender, So if these keywords available in query then it is not vague but if not then it is vague. But make sure, Not every query need to be gendered.) "{state.current_query}"
 Conversation History: {conversation_context}
 
 Generate a helpful response that:
@@ -470,6 +490,15 @@ Answer:"""
         # Get user preferences
         user_preferences = self.session_manager.get_user_preferences(session_id)
         print(f"👤 User Preferences: {user_preferences}")
+
+        # Track what we're currently discussing
+        if hasattr(state, 'search_results') and state.search_results:
+            last_products = state.search_results.get('display_products', [])
+            if last_products:
+                # Store the category/type of last shown products
+                last_category = last_products[0].get('category', '')
+                user_preferences['last_shown_category'] = last_category
+                user_preferences['last_shown_products'] = [p.get('title', '') for p in last_products[:3]]
         
         # Build enhanced query with context
         enhanced_query = self._build_contextual_query(current_query, conversation_context, user_preferences)
@@ -698,22 +727,26 @@ Answer:"""
         
         prompt = f"""
 User's Query: "{original_query}"
+Previous Products Shown (if any): {getattr(state, 'last_shown_products', 'None')}
 
 Top Search Results:
 {chr(10).join(product_summaries)}
 
 Analyze if these products match what the user is looking for. Consider:
-1. Product category match (shoes vs shirts vs electronics vs jewellery)
-2. Gender/demographic match (men vs women)
-3. Brand match (if user specified brand)
-4. General product type match
+1. Is this a follow-up question about previously shown products?
+   - If user asks "are these blue?" check if previous products were supposed to be blue
+2. Product category match (shoes vs shirts vs electronics vs jewellery)
+3. Gender/demographic match (men vs women vs kids vs unisex)
+4. Brand match (if user specified brand)
+5. Specific attributes (color, material, style)
+
+IMPORTANT: If user is questioning our previous results (e.g., "are you sure these are X?"), 
+validate if the current results actually match what they're questioning.
 
 Classify the match as:
 - HIGHLY_RELEVANT: Products exactly match the query
-- PARTIALLY_RELEVANT: Products are similar/related (e.g., user wanted running shoes, got sports shoes)
-- NOT_RELEVANT: Products are completely different (e.g., user wanted shirts, got shoes)
-
-IMPORTANT: Return ONLY valid JSON, no explanation before or after.  ← ADD THIS
+- PARTIALLY_RELEVANT: Products are similar/related
+- NOT_RELEVANT: Products don't match or user is questioning incorrect results
 
 Return JSON:
 {{
@@ -976,7 +1009,7 @@ Instructions:
 - Be conversational and helpful
 - Mention the EXACT number of products being displayed ({len(display_products)})
 - Don't mention the total found unless specifically relevant
-- If this is a follow-up query (like price filtering), acknowledge the previous context, followup query might be only 1 word like if you previously asked for gender, now user can say 'men' or 'women' or any small query
+- If this is a follow-up query (like price filtering), acknowledge the previous context, followup query might be only 1 word like if you previously asked for gender, now user can say 'men' or 'women' or unisex or any small query
 - Keep response concise but informative (2-3 sentences max)
 - Use encouraging language
 - Format cleanly with proper spacing
