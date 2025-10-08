@@ -10,7 +10,9 @@ interface Product {
   brand?: string;
   stars?: number;
   reviewsCount?: number;
-  thumbnailImage: string;
+  thumbnailImage?: string;
+  image?: string;
+  image_url?: string;
   description?: string;
   price?: {
     value: number;
@@ -71,13 +73,16 @@ const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
     <Card className="group overflow-hidden bg-card shadow-card hover:shadow-hover transition-all duration-300 transform hover:-translate-y-1 cursor-pointer">
       <div className="relative aspect-square overflow-hidden">
         <img
-          src={product.thumbnailImage || '/placeholder.svg'}
+          src={product.thumbnailImage || product.image || product.image_url || '/placeholder.svg'}
           alt={product.title}
           className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
           loading="lazy"
           referrerPolicy="no-referrer"
           onError={(e) => {
-            (e.target as HTMLImageElement).src = '/placeholder.svg';
+            const target = e.target as HTMLImageElement;
+            if (target.src !== '/placeholder.svg') {
+              target.src = '/placeholder.svg';
+            }
           }}
         />
         {product.brand && (

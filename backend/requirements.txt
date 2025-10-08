@@ -4,7 +4,8 @@ pydantic
 python-dotenv
 langgraph
 langchain-google-genai
-pinecone-client
+pinecone
 cohere
 psycopg2-binary
 redis
+langchain
