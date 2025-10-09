@@ -760,10 +760,18 @@ Answer:"""
                     return parts[-1].strip()
             return current_query  # Use query as-is for negations
        
-        # Detect 'more/another' style follow-ups referencing prior search
-        more_patterns = [r'\bmore\b', r'\banother\b', r'\b2 more\b', r'\btwo more\b', r'\bshow more\b', r'\bsuggest\b']
+        # Detect explicit "more/another" style follow-ups referencing prior search.
+        # Do NOT treat a plain "suggest" as a follow-up — only "suggest more/other/similar"
+        more_patterns = [
+            r'\bmore\b',
+            r'\banother\b',
+            r'\b2 more\b',
+            r'\btwo more\b',
+            r'\bshow more\b',
+            r'\bsuggest\s+(?:more|another|similar|other|alternatives)\b'
+        ]
         if any(re.search(p, current_lower) for p in more_patterns) and last_search_query:
-            # Keep the previous search terms, optionally adjust count but search query stays category-based
+            # If user explicitly asked for more/another/similar, reuse last_search_query
             return last_search_query
         # But if asking for "X more", we need to exclude previously shown products
         if re.search(r'\d+\s+more', current_lower):
@@ -814,9 +822,23 @@ Answer:"""
         # Check cache first
         cached_results = self.cache_manager.get_cached_search(search_query)
         if cached_results:
-            print("ðŸ“¦ Using cached results")
-            state.search_results = cached_results
-            return state
+            cached_original = (cached_results.get('original_query') or "").strip().lower()
+            current_q = (state.current_query or "").strip().lower()
+        
+            # If the cached results were produced for a different original user query,
+            # be conservative and don't reuse them unless current query is obviously a short follow-up.
+            if cached_original and cached_original != current_q:
+                # allow reuse only for very short follow-ups like "more" / "show more" (<=3 words)
+                if len(current_q.split()) <= 3 and re.search(r'\b(more|another|show more|again)\b', current_q):
+                    print("ðŸ“¦ Using cached results (short follow-up detected)")
+                    state.search_results = cached_results
+                    return state
+                else:
+                    print("⚠️ Cached results original_query mismatch — ignoring cache for this query")
+            else:
+                print("ðŸ“¦ Using cached results")
+                state.search_results = cached_results
+                return state
         
         # Extract price filters from search query
         price_filters = self._extract_price_filters(search_query)
