@@ -14,14 +14,17 @@ class SimpleProcessor:
     def process_query(self, query: str, context: str = "") -> Dict[str, Any]:
         """Process user query and extract search intent with conversation awareness"""
         
-        print(f"🤖 SimpleProcessor - Processing: '{query}'")
-        print(f"📚 SimpleProcessor - Context: {context[:100]}...")
+        print(f"ðŸ¤– SimpleProcessor - Processing: '{query}'")
+        print(f"ðŸ“š SimpleProcessor - Context: {context[:100]}...")
         
         prompt = f"""
 You are an intelligent shopping assistant that understands conversation context and follow-up queries.
 
+CONVERSATION (last 10 turns):
+{context}
+
 Current User Query: "{query}"
-Conversation Context: {context}
+Conversation Context: Use the CONVERSATION above (includes explicit User/Assistant turns). Infer missing details (like gender, category, count) from prior turns.
 
 Analyze this query considering the conversation history. Determine if this is:
 1. A new product search
@@ -60,27 +63,34 @@ Be smart about context:
 
 Focus on creating the best possible search query by combining current query with relevant context.
 
+VERY IMPORTANT for Pinecone query formation:
+- Prefer concise category-first phrasing the vector index understands, e.g. "men running shoes", "women clothing shirts", "nike shoes men".
+- When user asks category-level info (like "what products you have in clothing"), return search_terms as just the normalized category token (e.g., "clothing"), not a long sentence.
+- Normalize common misspellings: cloths->clothing, jewellery->jewelry.
+- If the current query lacks gender but the conversation context indicates a consistent gender (e.g., "men" mentioned previously), include that gender in search_terms.
+- For requests like "more", "another", "2 more", treat as follow-ups and reuse the previous category/brand/gender context to form the search_terms.
+
 Note: Make sure you process query by undersatnding becuase sometimes there is a spelling mistake that you need to understand & correct 
 """
         
         try:
-            print("📤 SimpleProcessor - Sending to Gemini...")
+            print("ðŸ“¤ SimpleProcessor - Sending to Gemini...")
             response = self.llm.invoke(prompt)
             content = response.content.strip()
             
-            print(f"📥 SimpleProcessor - Gemini raw response: {content[:200]}...")
+            print(f"ðŸ“¥ SimpleProcessor - Gemini raw response: {content[:200]}...")
             
             # Clean JSON response
             if content.startswith('```json'):
                 content = content.replace('```json', '').replace('```', '').strip()
             
             result = json.loads(content)
-            print(f"✅ SimpleProcessor - Parsed result: {json.dumps(result, indent=2)}")
+            print(f"âœ… SimpleProcessor - Parsed result: {json.dumps(result, indent=2)}")
             
             return result
             
         except Exception as e:
-            print(f"❌ SimpleProcessor - Error: {e}")
+            print(f"âŒ SimpleProcessor - Error: {e}")
             return {
                 "search_terms": query,
                 "intent": "specific",

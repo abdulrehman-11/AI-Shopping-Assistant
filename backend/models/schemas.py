@@ -29,6 +29,8 @@ class QueryType(str, Enum):
     OFF_TOPIC = "off_topic"
     PRODUCT_QUESTION = "product_question"
     UNAVAILABLE = "unavailable"
+    CATEGORIES = "categories"
+    CATEGORY_INFO = "category_info"
 
 class QueryClassification(BaseModel):
     query_type: QueryType
@@ -68,6 +70,7 @@ class AgentState(BaseModel):
     off_topic_reason: Optional[str] = None
     original_simple_response: Optional[str] = None
     shown_product_asins: List[str] = [] 
+    last_shown_products: Optional[List[str]] = None
     
     # New fields for improvements
     conversation_context: Optional[str] = None  # Cached context to avoid multiple fetches
