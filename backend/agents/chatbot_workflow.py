@@ -990,8 +990,9 @@ Products to validate:
 For EACH product, determine if it matches the query criteria:
 - Product type match (e.g., if user wants "bag", is it actually a bag?)
 - Color match (if specified - e.g., "blue" means the product should be blue colored, not just have "blue" in brand name)
-- Gender match (if specified)
-- Category match (shoes vs socks, bracelet vs watch, etc.)
+- Must Gender match (if specified)
+- Also check for prices, is the prices match what user required
+- Category match (shoes vs socks, bracelet vs watch, etc etc.)
 
 Return JSON with individual scores:
 {{
@@ -1007,6 +1008,7 @@ STRICT RULES:
 - "blue bag" means a bag that is blue in color, NOT products with "blue" in brand name
 - "dress shoes" means formal shoes, NOT socks or casual shoes
 - "leather bracelet" means bracelet made of leather, NOT watches or other accessories
+- If user specific something like about price, ratings, brand, colours, etc or even number of products to shown make sure to validate that too, by checking the data available in product metadata correctly and intelligenetly
 - Be strict about product type matching
 """
 
