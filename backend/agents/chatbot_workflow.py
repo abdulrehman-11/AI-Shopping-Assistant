@@ -1009,6 +1009,7 @@ STRICT RULES:
 - "dress shoes" means formal shoes, NOT socks or casual shoes
 - "leather bracelet" means bracelet made of leather, NOT watches or other accessories
 - If user specific something like about price, ratings, brand, colours, etc or even number of products to shown make sure to validate that too, by checking the data available in product metadata correctly and intelligenetly
+- Must make sure to skip those that are duplicate like if 2 products are seems as same (same means same model but different ASINs or variants) then keep only one of them and mark this as well as are doing for those that are not showing
 - Be strict about product type matching
 """
 
