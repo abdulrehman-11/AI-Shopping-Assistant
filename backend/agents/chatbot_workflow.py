@@ -840,7 +840,7 @@ Answer:"""
             filters=filters,
             top_k=25  # Get more to allow exclusions
         )
-        
+
         # Exclude previously shown products if this is a "more" request
         user_preferences = self.session_manager.get_user_preferences(state.session_id)
         exclude_asins = user_preferences.get('exclude_asins', [])
@@ -908,6 +908,11 @@ Answer:"""
                 
             except Exception as e:
                 print(f"âŒ Reranking failed: {e}")
+
+        # ✅ Apply strict filtering
+        products = self._apply_strict_filters(products, search_query)
+        print(f"📋 After strict filtering: {len(products)} products")
+        
         
         # Apply post-search price filtering
         if price_filters and products:
@@ -971,36 +976,38 @@ Answer:"""
             summary = f"{i}. {p.get('title', 'Product')} - {p.get('brand', '')} - {p.get('category', '')} - ${p.get('price_value', 0):.2f}"
             product_summaries.append(summary)
         
+        # After the existing product_summaries building...
+
+        # Individual product validation
         prompt = f"""
+Analyze EACH product individually for relevance to the user's query.
+
 User's Query: "{original_query}"
-Previous Products Shown (if any): {state.last_shown_products if hasattr(state, 'last_shown_products') and state.last_shown_products else self.session_manager.get_context_value(state.session_id, 'last_display_products', [])}
 
-
-Top Search Results:
+Products to validate:
 {chr(10).join(product_summaries)}
 
-Analyze if these products match what the user is looking for. Consider:
-1. Is this a follow-up question about previously shown products?
-   - If user asks "are these blue?" check if previous products were supposed to be blue
-2. Product category match (shoes vs shirts vs electronics vs jewellery)
-3. Gender/demographic match (men vs women vs kids vs unisex)
-4. Brand match (if user specified brand)
-5. Specific attributes (color, material, style)
+For EACH product, determine if it matches the query criteria:
+- Product type match (e.g., if user wants "bag", is it actually a bag?)
+- Color match (if specified - e.g., "blue" means the product should be blue colored, not just have "blue" in brand name)
+- Gender match (if specified)
+- Category match (shoes vs socks, bracelet vs watch, etc.)
 
-IMPORTANT: If user is questioning our previous results (e.g., "are you sure these are X?"), 
-validate if the current results actually match what they're questioning.
-
-Classify the match as:
-- HIGHLY_RELEVANT: Products exactly match the query
-- PARTIALLY_RELEVANT: Products are similar/related
-- NOT_RELEVANT: Products don't match or user is questioning incorrect results
-
-Return JSON:
+Return JSON with individual scores:
 {{
-    "relevance": "HIGHLY_RELEVANT|PARTIALLY_RELEVANT|NOT_RELEVANT",
-    "reasoning": "brief explanation",
-    "confidence": 0.0-1.0
+    "products": [
+        {{"index": 0, "relevant": true/false, "reason": "explanation"}},
+        {{"index": 1, "relevant": true/false, "reason": "explanation"}},
+        ...
+    ],
+    "overall_relevance": "HIGHLY_RELEVANT|PARTIALLY_RELEVANT|NOT_RELEVANT"
 }}
+
+STRICT RULES:
+- "blue bag" means a bag that is blue in color, NOT products with "blue" in brand name
+- "dress shoes" means formal shoes, NOT socks or casual shoes
+- "leather bracelet" means bracelet made of leather, NOT watches or other accessories
+- Be strict about product type matching
 """
 
         try:
@@ -1032,6 +1039,18 @@ Return JSON:
             print(f"ðŸ“„ Extracted JSON: {json_content[:200]}...")
     
             result = json.loads(json_content)
+
+            validated_products = []
+            for prod_validation in result.get("products", []):
+                if prod_validation.get("relevant", False):
+                    idx = prod_validation.get("index", -1)
+                    if 0 <= idx < len(products):
+                        validated_products.append(products[idx])
+
+            # ✅ Update the search results with filtered products
+            state.search_results["display_products"] = validated_products[:5]  # Keep max 5
+            state.search_results["products"] = validated_products
+            state.search_results["total_found"] = len(validated_products)
             relevance = result.get("relevance", "HIGHLY_RELEVANT")
     
             print(f"ðŸ“Š Relevance: {relevance}")
@@ -1162,6 +1181,54 @@ Response:"""
         
         return filters
     
+    def _apply_strict_filters(self, products: List[Dict], query: str) -> List[Dict]:
+        """Apply strict post-search filters based on query keywords"""
+        query_lower = query.lower()
+        filtered = []
+        
+        # Define product type keywords and their exclusions
+        type_exclusions = {
+            'bag': ['socks', 'shoes', 'shirt', 'pants', 'watch', 'bracelet'],
+            'shoes': ['socks', 'bag', 'shirt', 'pants', 'insole', 'laces'],
+            'bracelet': ['watch', 'necklace', 'ring', 'socks', 'shoes'],
+            'dress shoes': ['boots', 'sneakers', 'socks', 'casual', 'athletic']
+        }
+        
+        # Extract the main product type from query
+        requested_type = None
+        for ptype in type_exclusions.keys():
+            if ptype in query_lower:
+                requested_type = ptype
+                break
+            
+        for product in products:
+            title_lower = (product.get('title', '') or '').lower()
+            category_lower = (product.get('category', '') or '').lower()
+            
+            # Check exclusions
+            if requested_type and requested_type in type_exclusions:
+                excluded = False
+                for exclusion in type_exclusions[requested_type]:
+                    if exclusion in title_lower or exclusion in category_lower:
+                        excluded = True
+                        break
+                if excluded:
+                    continue
+                
+            # Check color matching (if color specified)
+            color_words = ['blue', 'red', 'green', 'black', 'white', 'brown', 'pink', 'yellow']
+            for color in color_words:
+                if color in query_lower:
+                    # Color should be in title/description, not just brand name
+                    if color not in title_lower.split() and color not in product.get('color', '').lower():
+                        # Skip if color doesn't match
+                        if not any(color in word.lower() for word in title_lower.split() if 'brand' not in word.lower()):
+                            continue
+                        
+            filtered.append(product)
+        
+        return filtered
+    
     def _extract_rating_filter(self, query: str) -> float:
         """Extract minimum rating from query"""
         query_lower = query.lower()
@@ -1230,8 +1297,20 @@ Response:"""
                 except Exception:
                     requested_count = 3
 
+        
+
         # Limit to requested number for display
         display_products = products[:requested_count] if products else []
+
+        # ✅ Acknowledge if fewer relevant products than requested
+        acknowledgement_note = " "
+        if len(display_products) < requested_count and len(display_products) > 0:
+            acknowledgement_note = (
+                f"\nNOTE: User requested {requested_count} but only {len(display_products)} relevant products were found. "
+                "Acknowledge this naturally."
+    )
+
+
         print ("display_products = ",display_products)
         if display_products:
             conversation_context = state.conversation_context
@@ -1271,6 +1350,8 @@ Instructions:
 - Format cleanly with proper spacing
 
 Generate a natural response:"""
+            
+            prompt += acknowledgement_note
 
             print(f"ðŸ“¤ Sending to Gemini for response generation...")
             

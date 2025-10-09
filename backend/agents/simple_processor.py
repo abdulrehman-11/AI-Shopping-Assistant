@@ -61,6 +61,10 @@ Be smart about context:
 - If user asks for "nike" after talking about "shoes for men", combine as "nike shoes for men"
 - Extract price filters like "more than $100", "under $50", "between $50-100"
 
+CRITICAL for search accuracy:
+- Understnd what user required like, If user asks for "blue bag", search for "bag blue" not just anything with "blue" in name
+- Always include the main product type as the primary search term
+
 Focus on creating the best possible search query by combining current query with relevant context.
 
 VERY IMPORTANT for Pinecone query formation:
