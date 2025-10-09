@@ -965,6 +965,12 @@ Answer:"""
         search_results = state.search_results or {}
         products = search_results.get("display_products", [])
         original_query = state.current_query
+
+        # ✅ Handle "top N" queries specially - skip strict validation
+        if re.search(r'\btop\s+\d+', original_query.lower()):
+            print("⚙️ Detected 'top N' query — skipping strict validation")
+            state.relevance_status = "highly_relevant"
+            return state
         
         if not products:
             state.relevance_status = "no_results"
@@ -1344,6 +1350,7 @@ Search Results: Found {total_found} products total, showing top {len(display_pro
 {relevance_instruction}
 
 Instructions:
+If the query includes phrases like "top N" or "best N", assume user wants the top-rated or most relevant products. Respond accordingly by ranking or summarizing.
 - Be conversational and helpful
 - Mention the EXACT number of products being displayed ({len(display_products)})
 - Don't mention the total found unless specifically relevant
