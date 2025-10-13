@@ -3,6 +3,7 @@ import redis
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 from models.schemas import ConversationMessage, MessageRole, SessionData
+import os
 
 class SessionManager:
     """Manages conversation sessions and memory using Redis or in-memory fallback"""
@@ -13,32 +14,52 @@ class SessionManager:
         
         if redis_url:
             try:
-                from redis.connection import ConnectionPool
-                pool = ConnectionPool.from_url(
-                    redis_url,
-                    decode_responses=True,
-                    max_connections=10,
-                    socket_keepalive=True,
-                    socket_keepalive_options={
-                        1: 1,  # TCP_KEEPIDLE
-                        2: 1,  # TCP_KEEPINTVL
-                        3: 3   # TCP_KEEPCNT
-                    }
-                )
-                self.redis = redis.Redis(connection_pool=pool)
+                # Check if using Redis Cloud (SSL required)
+                use_ssl = redis_url.startswith('rediss://') or 'redis-cloud.com' in redis_url or 'redns.redis-cloud.com' in redis_url
+                
+                if use_ssl:
+                    # SSL configuration for Redis Cloud
+                    from redis.connection import ConnectionPool
+                    pool = ConnectionPool.from_url(
+                        redis_url,
+                        decode_responses=True,
+                        max_connections=10,
+                        socket_connect_timeout=5,
+                        socket_timeout=5,
+                        retry_on_timeout=True,
+                        health_check_interval=30,
+                        ssl_cert_reqs=None  # Don't verify SSL certificates
+                    )
+                    self.redis = redis.Redis(connection_pool=pool)
+                else:
+                    # Regular Redis without SSL
+                    self.redis = redis.from_url(
+                        redis_url,
+                        decode_responses=True,
+                        socket_connect_timeout=5,
+                        socket_timeout=5
+                    )
+                
+                # Test connection
                 self.redis.ping()
                 self.use_redis = True
                 print(f"✅ Connected to Redis for session management")
-            except Exception as e:
+                
+            except redis.ConnectionError as e:
                 print(f"⚠️ Redis connection failed, using in-memory storage: {e}")
                 self.redis = None
+                self.use_redis = False
+            except Exception as e:
+                print(f"⚠️ Redis setup failed, using in-memory storage: {e}")
+                self.redis = None
+                self.use_redis = False
         else:
-            print("📝 Using in-memory session storage")
+            print("💾 Using in-memory session storage (no Redis URL provided)")
     
     def get_session(self, session_id: str) -> SessionData:
         """Get or create session data"""
         try:
-            if self.use_redis:
+            if self.use_redis and self.redis:
                 data = self.redis.get(f"session:{session_id}")
                 if data:
                     session_dict = json.loads(data)
@@ -72,7 +93,7 @@ class SessionManager:
         try:
             session.updated_at = datetime.now()
             
-            if self.use_redis:
+            if self.use_redis and self.redis:
                 # Convert to dict for JSON serialization
                 session_dict = session.dict()
                 # Convert datetime objects to ISO strings
@@ -88,6 +109,10 @@ class SessionManager:
                 
         except Exception as e:
             print(f"Session save error: {e}")
+            # Fallback to in-memory if Redis fails
+            if self.use_redis:
+                print("⚠️ Falling back to in-memory storage for this session")
+                self.memory[session.session_id] = session
     
     def add_message(self, session_id: str, role: MessageRole, content: str, metadata: Dict[str, Any] = None):
         """Add a message to the session"""
@@ -205,7 +230,7 @@ class SessionManager:
     def clear_session(self, session_id: str):
         """Clear session data"""
         try:
-            if self.use_redis:
+            if self.use_redis and self.redis:
                 self.redis.delete(f"session:{session_id}")
             else:
                 self.memory.pop(session_id, None)
@@ -235,7 +260,7 @@ class SessionManager:
     def get_session_stats(self) -> Dict[str, Any]:
         """Get session manager statistics"""
         try:
-            if self.use_redis:
+            if self.use_redis and self.redis:
                 # Get Redis stats
                 info = self.redis.info('memory')
                 return {
