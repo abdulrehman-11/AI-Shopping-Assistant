@@ -18,19 +18,27 @@ class SessionManager:
                 use_ssl = redis_url.startswith('rediss://') or 'redis-cloud.com' in redis_url or 'redns.redis-cloud.com' in redis_url
                 
                 if use_ssl:
-                    # SSL configuration for Redis Cloud
-                    from redis.connection import ConnectionPool
-                    pool = ConnectionPool.from_url(
-                        redis_url,
-                        decode_responses=True,
-                        max_connections=10,
-                        socket_connect_timeout=5,
-                        socket_timeout=5,
-                        retry_on_timeout=True,
-                        health_check_interval=30,
-                        ssl_cert_reqs=None  # Don't verify SSL certificates
-                    )
-                    self.redis = redis.Redis(connection_pool=pool)
+                    # SSL configuration for Redis Cloud - FIX: Remove ssl_cert_reqs
+                    # Use a cleaner approach that works with modern redis-py versions
+                    try:
+                        # Try modern redis-py approach (v4.2+)
+                        self.redis = redis.from_url(
+                            redis_url,
+                            decode_responses=True,
+                            socket_connect_timeout=5,
+                            socket_timeout=5,
+                            retry_on_timeout=True,
+                            ssl_cert_reqs="none"  # Use string instead of None, or omit entirely
+                        )
+                    except TypeError:
+                        # Fallback for older versions or if ssl_cert_reqs isn't supported
+                        self.redis = redis.from_url(
+                            redis_url,
+                            decode_responses=True,
+                            socket_connect_timeout=5,
+                            socket_timeout=5,
+                            retry_on_timeout=True
+                        )
                 else:
                     # Regular Redis without SSL
                     self.redis = redis.from_url(
