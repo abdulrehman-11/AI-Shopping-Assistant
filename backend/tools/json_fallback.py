@@ -1,4 +1,5 @@
 import json
+import os
 from typing import List, Dict, Any, Optional
 
 class JsonFallbackTool:
@@ -92,6 +93,92 @@ class JsonFallbackTool:
             enriched.append(enriched_product)
         
         return enriched
+    
+    def filter_and_sort_by_criteria(
+        self,
+        products: List[Dict],
+        query: str,
+        min_price: Optional[float] = None,
+        max_price: Optional[float] = None,
+        min_rating: Optional[float] = None,
+        sort_by: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Post-process products with strict price/rating filtering from JSON data
+        """
+        if not products:
+            return products
+
+        # Detect if this is a price/rating focused query
+        query_lower = query.lower()
+        is_price_query = any(word in query_lower for word in ['cheap', 'expensive', 'price', 'budget', 'affordable', '$', 'dollar', 'under', 'between', 'less than', 'more than'])
+        is_rating_query = any(word in query_lower for word in ['rating', 'rated', 'star', 'review', 'best', 'top', 'quality'])
+
+        if not (is_price_query or is_rating_query or min_price or max_price or min_rating):
+            return products  # Return as-is if not a price/rating query
+
+        # Get ASINs from products and look up full data from the in-memory index
+        asins = [p.get('asin') for p in products if p.get('asin')]
+        enriched = []
+        for asin in asins:
+            full_product = self.products_data.get(asin)
+            if not full_product:
+                # If we don't have the ASIN in the in-memory index, skip
+                continue
+
+            # full_product found from indexed JSON
+            if full_product:
+                # Extract actual price value
+                price_value = None
+                if isinstance(full_product.get('price'), dict):
+                    price_value = full_product['price'].get('value')
+                elif full_product.get('price'):
+                    try:
+                        price_value = float(str(full_product['price']).replace('$', '').replace(',', ''))
+                    except:
+                        pass
+                    
+                # Apply strict filtering
+                if min_price and price_value and price_value < min_price:
+                    continue
+                if max_price and price_value and price_value > max_price:
+                    continue
+                if min_rating and full_product.get('stars', 0) < min_rating:
+                    continue
+                
+                # Merge with original product data (preserve rerank score)
+                original = next((p for p in products if p.get('asin') == asin), {})
+                full_product['rerank_score'] = original.get('rerank_score', 0)
+                full_product['similarity_score'] = original.get('similarity_score', 0)
+                full_product['price_value'] = price_value  # Add normalized price
+
+                enriched.append(full_product)
+
+        # Apply sorting based on query intent or explicit sort parameter
+        if sort_by or is_price_query or is_rating_query:
+            # Detect implicit sorting from query
+            if not sort_by:
+                if any(word in query_lower for word in ['cheapest', 'lowest price', 'budget']):
+                    sort_by = 'price_low_to_high'
+                elif any(word in query_lower for word in ['expensive', 'highest price', 'premium']):
+                    sort_by = 'price_high_to_low'
+                elif any(word in query_lower for word in ['best rated', 'highest rating', 'top rated']):
+                    sort_by = 'rating'
+
+            # Apply sorting
+            if sort_by in ['price_low_to_high', 'cheapest']:
+                enriched = sorted(enriched, key=lambda x: x.get('price_value') or 999999)
+            elif sort_by in ['price_high_to_low', 'expensive']:
+                enriched = sorted(enriched, key=lambda x: x.get('price_value') or 0, reverse=True)
+            elif sort_by in ['rating', 'rating_high']:
+                enriched = sorted(enriched, key=lambda x: (x.get('stars') or 0, x.get('reviewsCount') or 0), reverse=True)
+            elif sort_by in ['popular', 'reviews']:
+                enriched = sorted(enriched, key=lambda x: x.get('reviewsCount') or 0, reverse=True)
+            else:
+                # Default: balance between rerank score and criteria match
+                enriched = sorted(enriched, key=lambda x: x.get('rerank_score', 0), reverse=True)
+
+        return enriched if enriched else products  # Fallback to original if no matches
     
     def _get_nested_value(self, data: Dict, path: str) -> Any:
         """Get nested value from dict using dot notation (e.g., 'price.value')"""

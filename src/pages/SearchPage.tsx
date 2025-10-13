@@ -4,7 +4,8 @@ import Header from '@/components/Header';
 import ProductCard from '@/components/ProductCard';
 import { Button } from '@/components/ui/button';
 import ChatBot from '@/components/ChatBot';
-import { Loader2 } from 'lucide-react';
+import { Loader2, MessageCircle } from 'lucide-react';
+import productsData from '@/data/products.json';
 
 const SearchPage = () => {
   const [searchParams] = useSearchParams();
@@ -23,56 +24,20 @@ const SearchPage = () => {
     }
   }, [query]);
 
-  const searchProducts = async (searchQuery: string) => {
+  const searchProducts = (searchQuery: string) => {
     setLoading(true);
     setHasSearched(true);
-    setProducts([]); // Clear previous results immediately
+    setProducts([]);
     
-    try {
-      const response = await fetch(`${process.env.NODE_ENV === 'production' 
-        ? 'https://ai-shopping-assistant-1.onrender.com' 
-        : 'http://localhost:8000'}/search`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: searchQuery, limit: 30 })
-      });
-      
-      const data = await response.json();
-      const normalized = (data.products || []).map((p: any) => ({
-        ...p,
-        thumbnailImage: p.thumbnailImage || p.image || '',
-      }));
-      
-      // Remove duplicates based on ASIN and improve relevance
-      const uniqueProducts = normalized.reduce((acc: any[], product: any) => {
-        const existingIndex = acc.findIndex(p => p.asin === product.asin);
-        if (existingIndex === -1) {
-          acc.push(product);
-        } else {
-          // Keep the product with better similarity score or more complete data
-          const existing = acc[existingIndex];
-          if (product.similarity_score > existing.similarity_score || 
-              (product.title && product.title.length > existing.title?.length)) {
-            acc[existingIndex] = product;
-          }
-        }
-        return acc;
-      }, []);
-      
-      // Sort by relevance and limit to top results
-      const sortedProducts = uniqueProducts
-        .sort((a, b) => (b.similarity_score || 0) - (a.similarity_score || 0))
-        .slice(0, 20);
-      
-      setProducts(sortedProducts);
-    } catch (error) {
-      console.error('Search error:', error);
-      // Improved fallback search with better relevance scoring
-      const productsModule = await import('@/data/products.json');
+    // Simulate loading delay for better UX
+    setTimeout(() => {
       const queryLc = searchQuery.toLowerCase().trim();
-      const queryWords = queryLc.split(/\s+/).filter(word => word.length > 0);
+      const queryWords = queryLc.split(/\s+/).filter(word => word.length > 2);
       
-      const scored = productsModule.default
+      console.log('Searching for:', queryLc);
+      console.log('Query words:', queryWords);
+      
+      const scored = productsData
         .map((p: any) => {
           const title = p.title?.toLowerCase() || '';
           const brand = p.brand?.toLowerCase() || '';
@@ -81,38 +46,59 @@ const SearchPage = () => {
           
           let score = 0;
           
-          // Exact matches get highest scores
-          if (title === queryLc) score += 20;
-          if (brand === queryLc) score += 15;
+          // Exact matches (highest priority)
+          if (title === queryLc) score += 100;
+          if (brand === queryLc) score += 80;
           
-          // Partial matches in title (most important)
-          if (title.includes(queryLc)) score += 10;
+          // Full query contained in title
+          if (title.includes(queryLc)) score += 50;
           
-          // Word-by-word matching in title
-          queryWords.forEach(word => {
-            if (title.includes(word)) score += 5;
-            if (brand.includes(word)) score += 3;
-            if (category.includes(word)) score += 2;
-            if (description.includes(word)) score += 1;
-          });
+          // Brand matches with query
+          if (brand.includes(queryLc)) score += 40;
           
-          // Boost for products with complete data
-          if (p.thumbnailImage && p.price) score += 2;
-          if (p.stars && p.stars > 4) score += 1;
+          // Category matches
+          if (category.includes(queryLc)) score += 30;
           
-          return { ...p, _score: score };
+          // Word-by-word matching
+          if (queryWords.length > 0) {
+            const titleMatches = queryWords.filter(word => title.includes(word)).length;
+            const brandMatches = queryWords.filter(word => brand.includes(word)).length;
+            const categoryMatches = queryWords.filter(word => category.includes(word)).length;
+            
+            const totalMatches = titleMatches + brandMatches + categoryMatches;
+            const matchRatio = totalMatches / (queryWords.length * 3); // Out of possible matches
+            
+            // Require at least one word match
+            if (totalMatches > 0) {
+              score += totalMatches * 8;
+              
+              // Bonus for high match ratio
+              if (matchRatio >= 0.5) {
+                score += 15;
+              }
+            }
+          }
+          
+          // Bonus for quality products
+          if (p.stars && p.stars >= 4.0) score += 2;
+          if (p.reviewsCount && p.reviewsCount > 1000) score += 2;
+          if (p.thumbnailImage) score += 1; // Bonus for having image
+          
+          return { ...p, _searchScore: score };
         })
-        .filter((p: any) => p._score > 0)
-        .sort((a: any, b: any) => b._score - a._score)
-        .slice(0, 20)
-        .map(({ _score, ...rest }: any) => ({
-          ...rest,
-          thumbnailImage: rest.thumbnailImage || rest.image || '',
-        }));
+        .filter((p: any) => p._searchScore >= 15) // Only relevant results
+        .sort((a: any, b: any) => b._searchScore - a._searchScore)
+        .map(({ _searchScore, ...rest }: any) => rest);
+      
+      console.log(`Found ${scored.length} relevant products`);
+      if (scored.length > 0) {
+        console.log('Top result:', scored[0].title);
+        console.log('Has image:', !!scored[0].thumbnailImage);
+      }
       
       setProducts(scored);
-    }
-    setLoading(false);
+      setLoading(false);
+    }, 300); // Small delay for smooth UX
   };
 
   return (
@@ -124,7 +110,7 @@ const SearchPage = () => {
           {loading ? (
             <>Searching for "{query}"...</>
           ) : hasSearched ? (
-            <>Results for "{query}" ({products.length} products found)</>
+            <>Results for "{query}" ({products.length} {products.length === 1 ? 'product' : 'products'} found)</>
           ) : (
             <>Enter a search term to find products</>
           )}
@@ -158,20 +144,22 @@ const SearchPage = () => {
           <div className="text-center py-16">
             <h3 className="text-2xl font-semibold mb-4">Start Your Search</h3>
             <p className="text-muted-foreground">
-              Use the search bar above to find products, or browse our categories below.
+              Use the search bar above to find products, or browse our categories.
             </p>
           </div>
         )}
       </div>
+      
       {!isChatOpen && (
         <Button
           onClick={() => setIsChatOpen(true)}
           className="fixed bottom-6 right-6 w-14 h-14 rounded-full bg-gradient-primary hover:opacity-90 shadow-2xl z-40"
           size="lg"
         >
-          💬
+          <MessageCircle className="h-6 w-6" />
         </Button>
       )}
+      
       {isChatOpen && <ChatBot onClose={() => setIsChatOpen(false)} />}
     </div>
   );

@@ -13,8 +13,20 @@ class SessionManager:
         
         if redis_url:
             try:
-                self.redis = redis.from_url(redis_url, decode_responses=True)
-                self.redis.ping()  # Test connection
+                from redis.connection import ConnectionPool
+                pool = ConnectionPool.from_url(
+                    redis_url,
+                    decode_responses=True,
+                    max_connections=10,
+                    socket_keepalive=True,
+                    socket_keepalive_options={
+                        1: 1,  # TCP_KEEPIDLE
+                        2: 1,  # TCP_KEEPINTVL
+                        3: 3   # TCP_KEEPCNT
+                    }
+                )
+                self.redis = redis.Redis(connection_pool=pool)
+                self.redis.ping()
                 self.use_redis = True
                 print(f"✅ Connected to Redis for session management")
             except Exception as e:
