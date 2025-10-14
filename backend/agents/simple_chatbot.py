@@ -1,6 +1,6 @@
 """
-Simplified Intelligent Shopping Chatbot
-Uses Gemini with function calling for natural conversation handling
+Simplified Intelligent Shopping Chatbot - FIXED VERSION
+Properly handles product count, validation, and filtering
 """
 
 import json
@@ -15,6 +15,7 @@ from tools.json_fallback import JsonFallbackTool
 from tools.cache_manager import CacheManager
 from models.schemas import MessageRole
 import cohere
+import re
 
 
 class SimpleChatbot:
@@ -45,7 +46,7 @@ class SimpleChatbot:
         print("✅ Simple Chatbot initialized successfully")
     
     def _build_system_prompt(self) -> str:
-        """Master prompt - single source of truth"""
+        """Master prompt - restored to full version with validation logic"""
         return """You are an intelligent shopping assistant for an e-commerce platform specializing in fashion and accessories.
 
 **Available Product Categories:**
@@ -59,32 +60,45 @@ class SimpleChatbot:
 **Your Capabilities:**
 You have access to a tool called `search_products` that searches our product database using semantic search.
 
+**CRITICAL PRODUCT DISPLAY RULES:**
+1. DEFAULT: Show 5 products unless user specifies otherwise
+2. RANGE: Can show 1-10 products maximum
+3. After receiving search results, YOU MUST:
+   - Analyze EACH product for relevance to the query
+   - Score each product 0-10 based on matching user intent
+   - ONLY include products scoring > 6
+   - List the specific ASINs you want to show
+4. Use this EXACT format at the end of your response:
+   SELECTED_PRODUCTS: [asin1, asin2, asin3, ...]
+   (Include ONLY the ASINs of products you want to display)
+5. If user asks for "shoes", NEVER show socks or other non-shoe items
+6. If user asks for "watches", NEVER show bracelets or other non-watch items
+
 **Conversation Guidelines:**
 
 1. **Natural Understanding:**
    - Understand user intent from context, not just current message
    - Handle follow-ups intelligently (e.g., "show me more", "cheaper ones", "Nike brand")
-   - handle spelling mistakes and typos
-   - Detect gender from context (e.g., "for my wife" = women's, "for me" + previous men's items = men's) also consider unisex if user said
+   - Handle spelling mistakes and typos
+   - Detect gender from context (e.g., "for my wife" = women's, "for me" + previous men's items = men's)
    - Combine current query with relevant conversation history
 
 2. **Search Strategy:**
    - Always search when user asks for products
-   - Search MORE than needed (e.g., search 10, show best 3)
-   - In your response, ONLY describe products you want to show
-    *- Afteribing products, add this line: "SHOW_COUNT: X" where X is how many products to display*
+   - Search MORE than needed (e.g., search 15-25, show best 3-5)
    - For vague queries (e.g., "shoes"), search first, then ask for clarification if results are mixed
-   - For quries like "any other item", "show more" etc requests, search with offset (skip already shown items)
-   - Strictly remove duplicates from results
-   - *Strictly remove irrelevant results to be shown*, For eg;  if user ask for rings and pinecone return rings + brecelets or necklaces etc, remove those irrelvant items and only show that are match with user intent
-   - Carefully check the words along with user query to know is that something specific about product, Like ; user: Men leather bags, here leather is specific about product, so search with that, and also consider this when filtering irrelevant to know user priority. But leather is not just the only priority, also what user search should also be considered, like here leather + men bags should match 
+   - For queries like "any other item", "show more" etc requests, search with offset (skip already shown items)
+   - **CRITICAL**: Remove duplicates from results
+   - **CRITICAL**: Remove ALL irrelevant results - be VERY strict about this
+   - Check product title, category, brand to ensure relevance
+   - For "leather bags", ONLY show items with "leather" in title/description
 
 3. **Handling Different Queries:**
    - **Product Search:** Search immediately and present results naturally
    - **Off-topic:** Politely redirect to shopping (e.g., "I'm here to help you shop! Looking for anything specific?")
    - **No Results:** Apologize, suggest the category might not be available, offer alternatives
-   - **Vague:** Show some results AND ask for clarification (don't just ask without showing anything)
-   - **Follow-ups:** Understand context (e.g., after showing "shoes", user says "under $50" → search "shoes under $50")
+   - **Vague:** Show some results AND ask for clarification
+   - **Follow-ups:** Understand context from conversation history
 
 4. **Response Style:**
    - Be conversational and helpful, not robotic
@@ -93,11 +107,11 @@ You have access to a tool called `search_products` that searches our product dat
    - Use natural language, avoid phrases like "I searched our database"
 
 5. **Price & Filters (CRITICAL):**
-   - ALWAYS extract price ranges: "under $50" → max_price=50, "more than $100" → min_price=100, "between $50-$100" → min_price=50, max_price=100
-   - For "cheapest"/"lowest price" → sort_by="price_low_to_high" + limit=5
-   - For "expensive"/"premium" → sort_by="price_high_to_low" + limit=5
+   - ALWAYS extract price ranges: "under $50" → max_price=50, "more than $100" → min_price=100
+   - For "cheapest"/"lowest price" → sort_by="price_low_to_high" + limit=25
+   - For "expensive"/"most expensive"/"premium" → sort_by="price_high_to_low" + limit=25
    - Extract ratings: "4+ stars" → min_rating=4, "highly rated" → min_rating=4
-   - **IMPORTANT**: When price/rating is mentioned, ALWAYS search MORE products (limit=25) to ensure accurate filtering
+   - **IMPORTANT**: When price/rating is mentioned, ALWAYS search MORE products (limit=25-30)
    - **Sorting:** Auto-detect and use sort_by parameter:
      * "cheapest", "budget", "affordable" → sort_by="price_low_to_high"
      * "expensive", "premium", "high-end" → sort_by="price_high_to_low"
@@ -105,73 +119,79 @@ You have access to a tool called `search_products` that searches our product dat
      * "popular", "most reviewed" → sort_by="popular"
 
 6. **Show More Logic:**
-   - If user says "show more", "next", "other options", etc., understand they want additional products
-   - Use the conversation history to understand what they were looking at
-   - Search with increased offset or limit
+   - If user says "show more", "next", "other options", understand they want additional products
+   - Use conversation history to understand what they were looking at
+   - Search with increased offset
+   - Track previously shown products to avoid repeats
 
 7. **Categories Question:**
    - If asked "what categories do you have?", list the available categories clearly
    - No need to search, just tell them
 
-8. **Product Questions:** When user asks about specific product features:
+8. **Product Questions:** 
+   - When user asks about specific product features:
      1. FIRST search for the product
-     2. THEN answer using the product's metadata/description/title
-     3. Example: "Is X waterproof?" → Search "X" → Check description/title → Answer
-     4. If description doesn't have info, search and say "I found X, but waterproof info isn't listed"
+     2. THEN answer using the product's metadata/description
+     3. If info not available, say so clearly
 
-9. **CRITICAL Product Filtering**:
-   - After searching, analyze EACH product returned
-   - Score relevance 0-10 based on matching query intent
-   - ONLY show products scoring > 5
-   - If user asks for "leather", NEVER show non-leather items
-   - Check product title AND category for relevance but if price also mentioned in query also chekc price tags.
-   - If fewer than 3 relevant products are found, say "I only found X leather items" instead of padding with irrelevant ones
+9. **CRITICAL Product Validation Process:**
+   After searching, for EACH product returned:
+   - Check if product category matches query (shoes query → only shoe products)
+   - Check if product title is relevant to query
+   - If user asked for specific feature (leather, waterproof, etc.), verify it exists
+   - Score relevance 0-10, only show products scoring > 6
+   - NEVER pad results with irrelevant items
+   - If only 1 product is relevant, show only 1
+   - Better to show fewer relevant products than include irrelevant ones
 
 10. **Important Rules:**
-   - ALWAYS search before saying "we don't have that" 
-   - Analyze the products that pinecone returns and only show relevant ones, removing duplicates and irrelevant items (This is must), Even 1 product is relecant please show only that one. Here consider product title, brand, category, price etc to decide if product is relevant or not
-   - Don't make up product details - only use what search returns
-   - If no results, suggest similar categories (not prooducts just categories) or ask for more details
+    - ALWAYS search before saying "we don't have that"
+    - Strictly validate products - NEVER show socks when asked for shoes
+    - Don't make up product details - only use what search returns
+    - If no relevant results, suggest similar categories
+
+**Response Format Instructions:**
+1. Describe the products you're showing
+2. At the END of your response, add:
+   SELECTED_PRODUCTS: [asin1, asin2, asin3, ...]
+   - List ONLY ASINs of products you want to display
+   - Maximum 10 ASINs
+   - Default 5 unless user specifies
+   - ONLY include truly relevant products
 
 **Example Interactions:**
-For each query limit=3 is not hardcoded, Yes it is dafult 3 if you found many products, So choose 3, but if 1 or 2 are relvant then show that only.
-Eg:
+
 User: "show me nike shoes"
-You: *search_products(query="nike shoes", limit=3)*
-Response: "Here are 3 popular Nike shoes for you! [describe briefly if needed]"
+You: *search_products(query="nike shoes", limit=15)*
+[After getting results, validate each product]
+Response: "Here are some popular Nike shoes for you!"
+SELECTED_PRODUCTS: [B07XKZ5RQF, B098F4Y2WZ, B08QVHFL4W, B09JQMJHXY, B07VX5VZW6]
 
-User: "show me cheapest men's bags"
-You: *search_products(query="men's bags", limit=25, sort_by="price_low_to_high")*
-Response: "Here are the most affordable men's bags I found! [show top 3-5]"
+User: "show me cheapest shoes"
+You: *search_products(query="shoes", limit=25, sort_by="price_low_to_high")*
+[Validate: Remove any socks, bags, or non-shoe items]
+Response: "Here are the cheapest shoes I found!"
+SELECTED_PRODUCTS: [B08N5WRWNW, B07GQR6JQV, B08HKF5YWM]
 
-User: "Nike shoes between $50-$100"
-You: *search_products(query="Nike shoes", min_price=50, max_price=100, limit=25)*
-Response: "Found Nike shoes in your budget ($50-$100)! [show best matches]"
+User: "show me 2 more"
+You: *search_products(query="[previous context]", limit=10, offset=3)*
+Response: "Here are 2 more options for you!"
+SELECTED_PRODUCTS: [B08QVJEFD4, B09NNFZZQ3]
 
-User: "highest rated watches"
-You: *search_products(query="watches", min_rating=4, limit=25, sort_by="rating")*
-Response: "These are our top-rated watches with 4+ stars! [show top 3]"
+User: Show me jewellery items under $10.
+You: *search_products(query="jewelry", max_price=10, limit=25)*
+[Validate: Ensure all items are jewelry and under $10]
+Response: "Here are some affordable jewelry items under $10."
+SELECTED_PRODUCTS: [B07Y5Z4L8K, B08L5Y3Z7P, B07XQX3Z5D]
 
-User: "Is X has Y feature/quality? etc, eg; Is Travelon Anti-Theft Metro Convertible, a leather bag"
-You: *search_products(query="Travelon Anti-Theft Metro Convertible bag"or "Travelon Metro Convertible bag",check their metadata of some specific info, limit=[all same relevant products, but if same then , [limit =1]])*
-Response: "I found Travelon Anti-Theft Metro Convertible bag[Check description for leather info]. According to the product details, [answer based on what you find]. Would you like to see this Bag"
+**VALIDATION CHECKLIST (USE FOR EVERY SEARCH):**
+□ Is this product in the right category?
+□ Does the title match what user asked for?
+□ If specific features requested, does product have them?
+□ Would showing this product make sense to the user?
+□ Score: _/10 (only show which are relevant)
 
-User: "I want shoes" 
-You: *search_products(query="shoes", limit=3)*
-Response: "I found some great shoes! Are you looking for men's or women's? Here are a few options to start..."
-
-User: [after seeing products] "show me more"
-You: *search_products(query="[previous search context]", limit=3, offset=3)*
-Response: "Here are 3 more options for you!"
-
-User: [after seeing men's shoes] "under $50"
-You: *search_products(query="men's shoes", max_price=50, limit =3)* 
-Response: "Here are men's shoes under $50!"
-
-User: "what categories do you have?"
-Response: "We have Men's Bags, Men's Jewelry, Men's Shoes, Men's Clothing, Nike Shoes, and Women's Clothing! What would you like to explore?"
-
-**Remember:** You're smart and conversational. Use context, understand intent, and help users shop naturally!"""
+**Remember:** Quality over quantity. Show fewer relevant products rather than including irrelevant ones."""
 
     def _search_products_impl(
         self,
@@ -179,32 +199,30 @@ Response: "We have Men's Bags, Men's Jewelry, Men's Shoes, Men's Clothing, Nike 
         min_price: Optional[float] = None,
         max_price: Optional[float] = None,
         min_rating: Optional[float] = None,
-        limit: int = 10,
+        limit: int = 15,
         offset: int = 0,
         sort_by: Optional[str] = None
     ) -> str:
         """
         Internal implementation of product search.
-        This is called by the tool wrapper.
         """
-        print(f"🔍 Search called: query='{query}', limit={limit}, offset={offset}")
+        print(f"🔍 Search called: query='{query}', limit={limit}, offset={offset}, sort={sort_by}")
         
         try:
+            # Detect price-focused query
+            is_price_query = (min_price is not None or max_price is not None or 
+                            sort_by in ['price_low_to_high', 'price_high_to_low'])
+            
             # Build filters
             filters = {}
-            if min_price is not None or max_price is not None:
-                price_filter = {}
-                if min_price is not None:
-                    price_filter['$gte'] = float(min_price)
-                if max_price is not None:
-                    price_filter['$lte'] = float(max_price)
-                filters['price_value'] = price_filter
-            
             if min_rating is not None:
                 filters['stars'] = {'$gte': float(min_rating)}
             
-            # Check cache first
-            cache_key = f"{query}_{min_price}_{max_price}_{min_rating}"
+            # For price queries, get MORE results
+            search_limit = max(limit * 2, 30) if is_price_query else limit + 10
+            
+            # Check cache with ALL parameters
+            cache_key = f"{query}_{min_price}_{max_price}_{min_rating}_{sort_by}_{offset}"
             cached = self.cache_manager.get_cached_search(cache_key, filters)
             
             if cached and not offset:
@@ -212,7 +230,6 @@ Response: "We have Men's Bags, Men's Jewelry, Men's Shoes, Men's Clothing, Nike 
                 print(f"📦 Using cached results: {len(products)} products")
             else:
                 # Search Pinecone
-                search_limit = limit + offset + 10
                 products = self.pinecone.search_similar_products(
                     query=query,
                     filters=filters,
@@ -222,8 +239,26 @@ Response: "We have Men's Bags, Men's Jewelry, Men's Shoes, Men's Clothing, Nike 
                 if not products:
                     return json.dumps({"products": [], "total": 0, "message": "No products found"})
                 
-                # Enrich with JSON data
+                # Enrich with JSON data FIRST (critical for price filtering)
                 products = self.json_fallback.enrich_products(products)
+                
+                # Apply price filtering on enriched data
+                if min_price is not None or max_price is not None:
+                    filtered = []
+                    for p in products:
+                        price_val = p.get('price_value')
+                        if price_val is None:
+                            continue
+                        
+                        if min_price is not None and price_val < min_price:
+                            continue
+                        if max_price is not None and price_val > max_price:
+                            continue
+                        
+                        filtered.append(p)
+                    
+                    products = filtered
+                    print(f"💰 Price filtered: {len(products)} products remain")
                 
                 # Cohere Rerank
                 if len(products) > 1:
@@ -237,7 +272,7 @@ Response: "We have Men's Bags, Men's Jewelry, Men's Shoes, Men's Clothing, Nike 
                             model="rerank-english-v3.0",
                             query=query,
                             documents=docs,
-                            top_n=min(search_limit, len(docs))
+                            top_n=min(len(docs), search_limit)
                         )
                         
                         reranked = []
@@ -251,64 +286,51 @@ Response: "We have Men's Bags, Men's Jewelry, Men's Shoes, Men's Clothing, Nike 
                         
                     except Exception as e:
                         print(f"⚠️ Reranking failed: {e}")
-
-                # 🧠 Filter out low-relevance or non-matching products
-                if products:
-                    # Filter by rerank score
-                    relevance_threshold = 0.3  # adjust if needed
-                    products = [p for p in products if p.get('rerank_score', 1.0) > relevance_threshold]
-
-                    # Additional keyword-based filtering
-                    query_keywords = query.lower().split()
-                    if "leather" in query_keywords:
-                        products = [p for p in products if "leather" in p.get("title", "").lower()]
-                    
-                    # Apply strict price/rating filtering and sorting from JSON data
-                    products = self.json_fallback.filter_and_sort_by_criteria(
-                        products=products,
-                        query=query,
-                        min_price=min_price,
-                        max_price=max_price,
-                        min_rating=min_rating,
-                        sort_by=sort_by
-                    )
                 
-                # Cache results
+                # Apply sorting AFTER filtering
+                if sort_by and products:
+                    if sort_by == "price_low_to_high":
+                        products = sorted(products, key=lambda x: x.get('price_value') or 999999)
+                    elif sort_by == "price_high_to_low":
+                        products = sorted(products, key=lambda x: x.get('price_value') or 0, reverse=True)
+                    elif sort_by == "rating":
+                        products = sorted(products, key=lambda x: (x.get('stars') or 0, x.get('reviews_count') or 0), reverse=True)
+                    elif sort_by == "popular":
+                        products = sorted(products, key=lambda x: x.get('reviews_count') or 0, reverse=True)
+                    print(f"📊 Sorted by: {sort_by}")
+                
+                # Cache results (with shorter TTL for price queries)
                 if not offset:
+                    ttl = 60 if is_price_query else 180
                     self.cache_manager.cache_search_results(
                         cache_key,
                         {"products": products, "total": len(products)},
-                        filters
+                        filters,
+                        ttl=ttl
                     )
             
             # Apply offset and limit
             final_products = products[offset:offset + limit]
-
-            # Apply sorting if requested
-            if sort_by and final_products:
-                if sort_by in ["price_low_to_high", "price_asc", "price_ascending"]:
-                    final_products = sorted(final_products, key=lambda x: x.get('price_value') or 999999)
-                    print(f"📊 Sorted by price (low to high)")
-                elif sort_by in ["price_high_to_low", "price_desc", "price_descending"]:
-                    final_products = sorted(final_products, key=lambda x: x.get('price_value') or 0, reverse=True)
-                    print(f"📊 Sorted by price (high to low)")
-                elif sort_by in ["rating", "rating_high", "top_rated"]:
-                    final_products = sorted(final_products, key=lambda x: x.get('stars') or 0, reverse=True)
-                    print(f"📊 Sorted by rating (high to low)")
-                elif sort_by in ["reviews", "popular", "popularity"]:
-                    final_products = sorted(final_products, key=lambda x: x.get('reviews_count') or 0, reverse=True)
-                    print(f"📊 Sorted by popularity (reviews)")
-
-            # Format for LLM
+            
+            # Remove exact duplicates by ASIN
+            seen_asins = set()
+            unique_products = []
+            for p in final_products:
+                asin = p.get('asin')
+                if asin and asin not in seen_asins:
+                    seen_asins.add(asin)
+                    unique_products.append(p)
+            
+            # Return ALL products for Gemini to validate
             result = {
-                "products": final_products,
+                "products": unique_products,
                 "total": len(products),
-                "showing": len(final_products),
+                "showing": len(unique_products),
                 "offset": offset,
-                "sorted_by": sort_by if sort_by else None  # ← Add this for transparency
+                "sorted_by": sort_by
             }
             
-            print(f"✅ Returning {len(final_products)} products (total: {len(products)})")
+            print(f"✅ Returning {len(unique_products)} products for validation")
             return json.dumps(result)
             
         except Exception as e:
@@ -318,7 +340,7 @@ Response: "We have Men's Bags, Men's Jewelry, Men's Shoes, Men's Clothing, Nike 
             return json.dumps({"products": [], "total": 0, "error": str(e)})
     
     def run_chat(self, message: str, session_id: str, user_context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Main chat function - handles everything"""
+        """Main chat function with proper product selection"""
         print(f"\n{'='*60}")
         print(f"💬 User: {message}")
         print(f"🆔 Session: {session_id}")
@@ -339,20 +361,20 @@ Response: "We have Men's Bags, Men's Jewelry, Men's Shoes, Men's Clothing, Nike 
                 HumanMessage(content=message)
             ]
             
-            # 4. Create tool dynamically (fixes the 'self' issue)
+            # 4. Create search tool
             search_tool = StructuredTool.from_function(
                 func=self._search_products_impl,
                 name="search_products",
                 description="""Search for products using semantic similarity.
-
+                
                 Parameters:
                 - query: Search terms
                 - min_price, max_price: Price filters
                 - min_rating: Minimum star rating
-                - limit: Number of products (default 10)
+                - limit: Number of products to retrieve (default 15, use 25+ for price queries)
                 - offset: Skip first N products (for pagination)
                 - sort_by: Sort results - options: 'price_low_to_high', 'price_high_to_low', 'rating', 'popular'
-
+                
                 Use this when user asks for products or wants to browse.""",
             )
             
@@ -364,22 +386,18 @@ Response: "We have Men's Bags, Men's Jewelry, Men's Shoes, Men's Clothing, Nike 
             response = llm_with_tools.invoke(messages)
             
             # 7. Handle tool calls
-            products_data = []
-            search_limit = 3  # default
-
+            all_products = []
+            
             while response.tool_calls:
                 print(f"🔧 Tool calls detected: {len(response.tool_calls)}")
-
+                
                 for tool_call in response.tool_calls:
                     if tool_call['name'] == 'search_products':
-                        # Save the limit Gemini requested
-                        search_limit = tool_call['args'].get('limit', 3)  # ← CAPTURE THIS
-
                         # Execute search
                         result = self._search_products_impl(**tool_call['args'])
                         result_data = json.loads(result)
-                        products_data = result_data.get('products', [])
-
+                        all_products = result_data.get('products', [])
+                        
                         # Add tool result to messages
                         messages.append(response)
                         messages.append(
@@ -388,30 +406,58 @@ Response: "We have Men's Bags, Men's Jewelry, Men's Shoes, Men's Clothing, Nike 
                                 name="search_products"
                             )
                         )
-
+                
                 # Second LLM call with tool results
-                print("🤖 Calling Gemini with tool results...")
+                print("🤖 Processing search results with validation...")
                 response = llm_with_tools.invoke(messages)
-
-            # 8. Extract final response
+            
+            # 8. Extract response and selected products
             response_text = response.content if hasattr(response, 'content') else str(response)
-
-            # Parse show count - use search_limit as default (what Gemini requested)
-            show_count = search_limit  # ← USE THIS, not 3!
-            import re
-            count_match = re.search(r'SHOW_COUNT:\s*(\d+)', response_text)
-            if count_match:
-                show_count = int(count_match.group(1))
-                # Remove the SHOW_COUNT line from user-facing response
-                response_text = re.sub(r'\s*SHOW_COUNT:\s*\d+\s*', '', response_text).strip()
-
+            
+            # Parse SELECTED_PRODUCTS list (specific ASINs to show)
+            products_to_show = []
+            selected_match = re.search(r'SELECTED_PRODUCTS:\s*\[(.*?)\]', response_text, re.DOTALL)
+            
+            if selected_match:
+                # Extract ASINs from the selection
+                asin_text = selected_match.group(1)
+                # Find all ASIN patterns (10 character alphanumeric)
+                asins = re.findall(r'[A-Z0-9]{10}', asin_text)
+                
+                # Get these specific products from results
+                for asin in asins[:10]:  # Max 10 products
+                    for p in all_products:
+                        if p.get('asin') == asin:
+                            products_to_show.append(p)
+                            break
+                
+                # Remove the SELECTED_PRODUCTS line from response
+                response_text = re.sub(r'\s*SELECTED_PRODUCTS:.*?\]', '', response_text, flags=re.DOTALL).strip()
+                
+                print(f"📋 Gemini selected {len(asins)} products, found {len(products_to_show)}")
+            else:
+                # Fallback: Check for old SHOW_COUNT format
+                show_count = 5  # Default
+                count_match = re.search(r'SHOW_COUNT:\s*(\d+)', response_text)
+                if count_match:
+                    show_count = min(int(count_match.group(1)), 10)
+                    response_text = re.sub(r'\s*SHOW_COUNT:\s*\d+\s*', '', response_text).strip()
+                    print(f"📋 Using SHOW_COUNT: {show_count}")
+                else:
+                    # If no explicit selection, Gemini might not have searched
+                    # or might be just responding without products
+                    if all_products:
+                        # Take top products based on rerank score
+                        show_count = min(5, len(all_products))
+                        print(f"📋 No explicit selection, showing top {show_count}")
+                
+                products_to_show = all_products[:show_count]
+            
             print(f"💬 Assistant: {response_text}")
-            print(f"📊 Show count: {show_count} (requested: {search_limit})\n")
-
-        
-
-            ui_products = self._format_products_for_ui(products_data[:show_count])
-
+            print(f"📊 Showing {len(products_to_show)} products\n")
+            
+            # 9. Format for UI
+            ui_products = self._format_products_for_ui(products_to_show)
             
             # 10. Save assistant response
             self.session_manager.add_message(
@@ -419,23 +465,22 @@ Response: "We have Men's Bags, Men's Jewelry, Men's Shoes, Men's Clothing, Nike 
                 MessageRole.ASSISTANT,
                 response_text,
                 metadata={
-                    "products_count": len(ui_products),
-                    "all_products": products_data[:10],
-                    "shown_products": products_data[:len(ui_products)]
+                    "products_shown": len(ui_products),
+                    "product_asins": [p.get('asin') for p in products_to_show]
                 }
             )
             
             # 11. Return response
             return {
                 "response": response_text,
-                "products": products_data,
+                "products": products_to_show,
                 "ui_products": ui_products,
                 "needs_clarification": False,
                 "clarification_questions": [],
                 "search_metadata": {
-                    "total_found": len(products_data),
-                    "search_query": message,
-                    "filters_applied": {}
+                    "total_found": len(all_products),
+                    "shown": len(products_to_show),
+                    "search_query": message
                 },
                 "session_id": session_id
             }
@@ -474,7 +519,18 @@ Response: "We have Men's Bags, Men's Jewelry, Men's Shoes, Men's Clothing, Nike 
         ui_products = []
         
         for p in products:
-            price_value = p.get("price_value") or (p.get("price", {}).get("value") if isinstance(p.get("price"), dict) else p.get("price"))
+            # Extract price value safely
+            price_value = None
+            if p.get("price_value"):
+                price_value = p.get("price_value")
+            elif isinstance(p.get("price"), dict):
+                price_value = p.get("price", {}).get("value")
+            elif p.get("price"):
+                try:
+                    price_value = float(str(p.get("price")).replace("$", "").replace(",", ""))
+                except:
+                    pass
+            
             price_str = f"${float(price_value):.2f}" if price_value else "See on Amazon"
             
             ui_products.append({
