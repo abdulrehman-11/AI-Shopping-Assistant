@@ -1,6 +1,7 @@
 """
 Simplified Intelligent Shopping Chatbot - FIXED VERSION
 Properly handles product count, validation, and filtering
+WITH DETERMINISTIC PARAMETER EXTRACTION
 """
 
 import json
@@ -14,6 +15,8 @@ from tools.session_manager import SessionManager
 from tools.json_fallback import JsonFallbackTool
 from tools.cache_manager import CacheManager
 from models.schemas import MessageRole
+from utils.query_parser import parse_query, is_followup_query, extract_category, extract_followup_count
+from utils.consistency_logger import log_extraction
 import cohere
 import re
 
@@ -64,14 +67,19 @@ You have access to a tool called `search_products` that searches our product dat
 1. DEFAULT: *Show 5 products unless user specifies*
 2. RANGE: Can show 1-10 products maximum
 3. After receiving search results, YOU MUST:
-   - Analyze EACH product for relevance to the query if not relvant please skip that product. Also dont need to provide thier Asins of irrelevant products 
-   - Intelligently select the most relevant products to show according to query + past context like brand, price, style, type etc.
+   - **CRITICAL PRICE VALIDATION:** If user specifies price range (e.g., "50-100", "under $75"), ONLY select products within that EXACT range. NEVER select products outside the range, even if they appear in search results. Better to show 0 products than show wrong price products.
+   - **CRITICAL GENDER VALIDATION:** If query mentions women/wife/her/mother/sister/ladies, ONLY select products with "women", "women's", "ladies", "lady" in title or category. REJECT any product containing "men", "men's", "male", "for men" in title/category.
+   - **CRITICAL GENDER VALIDATION:** If query mentions men/husband/him/father/brother, ONLY select products with "men", "men's", "male", "for men" in title or category. REJECT any product containing "women", "women's", "ladies", "female" in title/category.
+   - Analyze EACH product for relevance to the query if not relevant please skip that product. Also don't need to provide their ASINs of irrelevant products
+   - Intelligently select the most relevant products to show according to query + past context like brand, price, style, type, and GENDER
    - List only the specific selected ASINs you want to show
 4. Use this EXACT format at the end of your response:
    SELECTED_PRODUCTS: [asin1, asin2, asin3, ...]
    (Include ONLY the ASINs of products you want to display)
-5. If user asks for "shoes", search with pinecone, validate intelligently and never show irrelevant products like here socks or other non-shoe items are irrelvant.
+5. If user asks for "shoes", search with pinecone, validate intelligently and never show irrelevant products like here socks or other non-shoe items are irrelevant.
 6. If user asks for "watches", NEVER show bracelets or other non-watch items
+7. **GENDER IS CRITICAL:** Better to show 0 products than show wrong gender products. If search returns men's products for women's query, DO NOT select them.
+8. **PRICE IS CRITICAL:** If user specifies price range, showing products outside that range is WRONG. Always verify product price matches user's requested range.
 
 **Conversation Guidelines:**
 
@@ -80,7 +88,13 @@ You have access to a tool called `search_products` that searches our product dat
    - Handle follow-ups intelligently (e.g., "show me more", "cheaper ones", "Nike brand")
    - Handle follow up understanding what was the prefernce of user in prevous chat that user wont types now, For eg, IF earlier user say show cheapest [shoes], then in next query user say some query for same product then you need to understand that user want cheapest but with now specific etc. Do this for thing like price, rating, number of shoes to display, etc
    - Handle spelling mistakes and typos
-   - Detect gender from context (e.g., "for my wife" = women's, "for me" + previous men's items = men's, And Make sure if user mention gender in previous chat)
+   - **CRITICAL GENDER DETECTION:**
+     * "for my wife/mother/sister/girlfriend/her" = WOMEN'S products ONLY
+     * "for my husband/father/brother/boyfriend/him" = MEN'S products ONLY
+     * "accessories for my wife" = Women's accessories (NOT men's cufflinks/ties)
+     * Gender context persists across queries until explicitly changed
+     * NEVER show men's products when user asked for wife/mother/sister
+     * NEVER show women's products when user asked for husband/father/brother
    - Combine current query with relevant conversation history
 
 2. **Search Strategy:**
@@ -135,11 +149,19 @@ You have access to a tool called `search_products` that searches our product dat
     - Combine intelligently with price (e.g., “best rated under $100” → min_rating=4, max_price=100, sort_by="rating")
     - Note: When rating query detected, Try to only validate/select the product whose rating metadata available, if not available skip that product. This is specifically only for rating related query.
 
-7. **Show More Logic:**
-   - If user says "show more", "next", "other options", understand they want additional products
-   - Use conversation history to understand what they were looking at
-   - Search with increased offset
-   - Track previously shown products to avoid repeats
+7. **Show More Logic (CRITICAL FOR FOLLOW-UPS):**
+   - If user says "show more", "next", "other options", "2 more", understand they want additional products
+   - **MUST** use conversation history to understand WHAT CATEGORY they were looking at
+   - Examples:
+     * Previous: showed jewelry → "2 more" → Search for 2 more jewelry items
+     * Previous: showed men's bags → "show more" → Search for more men's bags
+     * Previous: showed women's shoes → "another" → Search for another women's shoe
+   - **INHERIT GENDER** from previous query:
+     * If previous was for "wife" → continue showing women's products
+     * If previous was for "husband" → continue showing men's products
+   - Search with increased offset to avoid showing duplicates
+   - Track previously shown products (ASINs) to avoid repeats
+   - "2 more" means show EXACTLY 2 products, not 5
 
 8. **Categories Question:**
    - If asked "what categories do you have?", list the available categories clearly
@@ -217,10 +239,11 @@ SELECTED_PRODUCTS: [B08XYZ12AB, B07ABC34DE, B09LMN56FG, B08TUV78HI, B07JKL90QR]
 □ Does the title match what user asked for?
 □ If specific features requested, does product have them?
 □ Would showing this product make sense to the user?
+□ **CRITICAL**: If price range specified (e.g., 50-100), is product price within that EXACT range? Reject products with price < min or price > max, even by $0.01.
 □ If price/rating mentioned, does product meet criteria?, For prices and ratings make sure that thoose products whose price/rating metadata is null/empty. Dont add them in search becuase user mention about price etc. IF you even found some product with no price/rating metadata, skip that product, And dont even write them into message that you found some but there price are nnot available etc
 □ IF no relevant products, is it better to say "we don't have that would you try to search something [some related one]" and dont even send ASIN to frontend for unchoosed or rejected product, ?
 
-**Remember:** Quality over quantity. Show fewer relevant products rather than including irrelevant ones."""
+**Remember:** Quality over quantity. Show fewer relevant products rather than including irrelevant ones. NEVER show products outside user's specified price range."""
 
     def _search_products_impl(
         self,
@@ -249,10 +272,20 @@ SELECTED_PRODUCTS: [B08XYZ12AB, B07ABC34DE, B09LMN56FG, B08TUV78HI, B07JKL90QR]
             
             # For price queries, get MORE results
             search_limit = max(limit * 2, 30) if is_price_query else limit + 10
-            
-            # Check cache with ALL parameters
-            cache_key = f"{query}_{min_price}_{max_price}_{min_rating}_{sort_by}_{offset}"
-            cached = self.cache_manager.get_cached_search(cache_key, filters)
+
+            # IMPROVED: Use normalized cache key based on query parser
+            parsed_query = parse_query(query)
+            cache_key = f"{parsed_query['normalized_query']}_{offset}"
+            print(f"🔑 Cache key: {cache_key}")
+
+            # FIX: Include price parameters in cache to prevent wrong cached results
+            cache_filters = {**filters}
+            if min_price is not None:
+                cache_filters['min_price'] = min_price
+            if max_price is not None:
+                cache_filters['max_price'] = max_price
+
+            cached = self.cache_manager.get_cached_search(cache_key, cache_filters)
             
             if cached and not offset:
                 products = cached.get('products', [])
@@ -264,79 +297,131 @@ SELECTED_PRODUCTS: [B08XYZ12AB, B07ABC34DE, B09LMN56FG, B08TUV78HI, B07JKL90QR]
                     filters=filters,
                     top_k=search_limit
                 )
-                
+
                 if not products:
                     return json.dumps({"products": [], "total": 0, "message": "No products found"})
-                
+
                 # Enrich with JSON data FIRST (critical for price filtering)
                 products = self.json_fallback.enrich_products(products)
-                
-                # Apply price filtering on enriched data
-                if min_price is not None or max_price is not None:
-                    filtered = []
-                    for p in products:
-                        price_val = p.get('price_value')
-                        if price_val is None:
-                            continue
-                        
-                        if min_price is not None and price_val < min_price:
-                            continue
-                        if max_price is not None and price_val > max_price:
-                            continue
-                        
-                        filtered.append(p)
-                    
-                    products = filtered
-                    print(f"💰 Price filtered: {len(products)} products remain")
-                
-                # Cohere Rerank
-                if len(products) > 1:
-                    try:
+
+            # FIX: Apply price filtering to BOTH cached and fresh results
+            # This ensures cached results are validated even if cache key includes price
+            if min_price is not None or max_price is not None:
+                filtered = []
+                for p in products:
+                    price_val = p.get('price_value')
+                    if price_val is None:
+                        continue
+
+                    if min_price is not None and price_val < min_price:
+                        continue
+                    if max_price is not None and price_val > max_price:
+                        continue
+
+                    filtered.append(p)
+
+                products = filtered
+                print(f"💰 Price filtered: {len(products)} products remain")
+
+            # Cohere Rerank with gender-aware documents (apply to both cached and fresh)
+            if len(products) > 1:
+                try:
+                    # Detect gender from query for reranking context
+                    query_lower = query.lower()
+                    gender_context = None
+                    if any(kw in query_lower for kw in ["women", "women's", "ladies", "lady", "female", "her"]):
+                        gender_context = "women's"
+                    elif any(kw in query_lower for kw in ["men", "men's", "male", "him", "man's"]):
+                        gender_context = "men's"
+
+                    # Build reranking documents with gender context
+                    if gender_context:
+                        docs = [
+                            f"{gender_context} {p.get('title', '')} {p.get('brand', '')} {p.get('category', '')} ${p.get('price_value', 0)}"
+                            for p in products
+                        ]
+                        print(f"👫 Gender-aware reranking with context: {gender_context}")
+                    else:
                         docs = [
                             f"{p.get('title', '')} {p.get('brand', '')} {p.get('category', '')} ${p.get('price_value', 0)}"
                             for p in products
                         ]
-                        
-                        rerank_result = self.cohere_client.rerank(
-                            model="rerank-english-v3.0",
-                            query=query,
-                            documents=docs,
-                            top_n=min(len(docs), search_limit)
-                        )
-                        
-                        reranked = []
-                        for r in rerank_result.results:
-                            prod = products[r.index].copy()
-                            prod['rerank_score'] = float(r.relevance_score)
-                            reranked.append(prod)
-                        
-                        products = reranked
-                        print(f"🎯 Reranked to {len(products)} products")
-                        
-                    except Exception as e:
-                        print(f"⚠️ Reranking failed: {e}")
-                
-                # Apply sorting AFTER filtering
-                if sort_by and products:
-                    if sort_by == "price_low_to_high":
-                        products = sorted(products, key=lambda x: x.get('price_value') or 999999)
-                    elif sort_by == "price_high_to_low":
-                        products = sorted(products, key=lambda x: x.get('price_value') or 0, reverse=True)
-                    elif sort_by == "rating":
-                        products = sorted(products, key=lambda x: (x.get('stars') or 0, x.get('reviews_count') or 0), reverse=True)
-                    elif sort_by == "popular":
-                        products = sorted(products, key=lambda x: x.get('reviews_count') or 0, reverse=True)
-                    print(f"📊 Sorted by: {sort_by}")
-                
-                # Cache results (with shorter TTL for price queries)
-                if not offset:
-                    ttl = 60 if is_price_query else 180
-                    self.cache_manager.cache_search_results(
-                        cache_key,
-                        {"products": products, "total": len(products)},
-                        filters,
-                        ttl=ttl
+
+                    rerank_result = self.cohere_client.rerank(
+                        model="rerank-english-v3.0",
+                        query=query,
+                        documents=docs,
+                        top_n=min(len(docs), search_limit)
                     )
+
+                    reranked = []
+                    for r in rerank_result.results:
+                        prod = products[r.index].copy()
+                        prod['rerank_score'] = float(r.relevance_score)
+                        reranked.append(prod)
+
+                    products = reranked
+                    print(f"🎯 Reranked to {len(products)} products")
+
+                    # POST-RERANK GENDER FILTERING
+                    if gender_context:
+                        gender_filtered = []
+
+                        for p in products:
+                            title_lower = p.get('title', '').lower()
+                            category_lower = p.get('category', '').lower()
+
+                            if gender_context == "women's":
+                                # Check for women's keywords
+                                has_female = any(kw in title_lower or kw in category_lower
+                                               for kw in ['women', "women's", 'ladies', 'lady', 'her', 'female', 'girl'])
+                                # Check for men's keywords (exclude if found)
+                                has_male = any(kw in title_lower or kw in category_lower
+                                             for kw in ['men', "men's", 'male', 'him', 'boy', "man's", ' for men'])
+
+                                # Include if has female keywords OR doesn't have male keywords
+                                if has_female or not has_male:
+                                    gender_filtered.append(p)
+
+                            elif gender_context == "men's":
+                                # Check for men's keywords
+                                has_male = any(kw in title_lower or kw in category_lower
+                                             for kw in ['men', "men's", 'male', 'him', 'boy', "man's", ' for men'])
+                                # Check for women's keywords (exclude if found)
+                                has_female = any(kw in title_lower or kw in category_lower
+                                               for kw in ['women', "women's", 'ladies', 'lady', 'her', 'female', 'girl'])
+
+                                # Include if has male keywords OR doesn't have female keywords
+                                if has_male or not has_female:
+                                    gender_filtered.append(p)
+
+                        products = gender_filtered
+                        print(f"👫 Gender filtered ({gender_context}): {len(products)} products remain")
+
+                except Exception as e:
+                    print(f"⚠️ Reranking failed: {e}")
+
+            # Apply sorting AFTER filtering (apply to both cached and fresh)
+            if sort_by and products:
+                if sort_by == "price_low_to_high":
+                    products = sorted(products, key=lambda x: x.get('price_value') or 999999)
+                elif sort_by == "price_high_to_low":
+                    products = sorted(products, key=lambda x: x.get('price_value') or 0, reverse=True)
+                elif sort_by == "rating":
+                    products = sorted(products, key=lambda x: (x.get('stars') or 0, x.get('reviews_count') or 0), reverse=True)
+                elif sort_by == "popular":
+                    products = sorted(products, key=lambda x: x.get('reviews_count') or 0, reverse=True)
+                print(f"📊 Sorted by: {sort_by}")
+
+            # Cache results only for fresh searches (with shorter TTL for price queries)
+            if not cached and not offset:
+                ttl = 60 if is_price_query else 180
+                self.cache_manager.cache_search_results(
+                    cache_key,
+                    {"products": products, "total": len(products)},
+                    cache_filters,  # Use cache_filters which includes price params
+                    ttl=ttl
+                )
             
             # Apply offset and limit
             final_products = products[offset:offset + limit]
@@ -369,28 +454,72 @@ SELECTED_PRODUCTS: [B08XYZ12AB, B07ABC34DE, B09LMN56FG, B08TUV78HI, B07JKL90QR]
             return json.dumps({"products": [], "total": 0, "error": str(e)})
     
     def run_chat(self, message: str, session_id: str, user_context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Main chat function with proper product selection"""
+        """Main chat function with proper product selection + deterministic extraction"""
         print(f"\n{'='*60}")
         print(f"💬 User: {message}")
         print(f"🆔 Session: {session_id}")
         print(f"{'='*60}\n")
-        
+
         try:
-            # 1. Add user message to session
+            # 1. DETERMINISTIC PARAMETER EXTRACTION
+            parsed_params = parse_query(message)
+            print(f"🎯 Parsed Parameters:")
+            print(f"   Clean Query: {parsed_params['clean_query']}")
+            print(f"   Price Range: {parsed_params['min_price']} - {parsed_params['max_price']}")
+            print(f"   Min Rating: {parsed_params['min_rating']}")
+            print(f"   Sort By: {parsed_params['sort_by']}")
+            print(f"   Gender: {parsed_params.get('gender')}")
+            print(f"   Normalized: {parsed_params['normalized_query']}\n")
+
+            # 2. DETECT FOLLOW-UP QUERIES AND ENRICH WITH CONTEXT
+            is_followup = is_followup_query(message)
+            last_context = self.session_manager.get_last_search_context(session_id)
+
+            if is_followup:
+                print(f"🔄 FOLLOW-UP DETECTED!")
+                print(f"   Last Category: {last_context['last_category']}")
+                print(f"   Last Gender: {last_context['last_gender']}")
+
+                # Extract category from current query or use last
+                current_category = extract_category(message)
+                if not current_category and last_context['last_category']:
+                    print(f"   → Injecting last category: {last_context['last_category']}")
+                    # For follow-ups, REPLACE query with category (don't append follow-up text like "2 more?")
+                    parsed_params['clean_query'] = last_context['last_category']
+
+                # Inherit gender if not specified
+                if not parsed_params.get('gender') and last_context['last_gender']:
+                    print(f"   → Inheriting gender: {last_context['last_gender']}")
+                    parsed_params['gender'] = last_context['last_gender']
+
+                # Extract count for "2 more", etc.
+                followup_count = extract_followup_count(message)
+                if followup_count:
+                    print(f"   → User wants {followup_count} more items")
+                    parsed_params['requested_count'] = followup_count
+
+            # 3. INHERIT GENDER FROM CONVERSATION HISTORY if not in current query
+            if not parsed_params.get('gender'):
+                preferences = self.session_manager.get_user_preferences(session_id)
+                if preferences.get('gender'):
+                    print(f"👤 Inheriting gender from history: {preferences['gender']}")
+                    parsed_params['gender'] = preferences['gender']
+
+            # 4. Add user message to session
             self.session_manager.add_message(session_id, MessageRole.USER, message)
-            
-            # 2. Get conversation history
+
+            # 5. Get conversation history (FILTERED for relevance)
             session = self.session_manager.get_session(session_id)
-            history_messages = self._format_history_for_llm(session.messages[-20:])
-            
-            # 3. Prepare messages for LLM
+            history_messages = self._format_history_for_llm_filtered(session.messages[-20:])
+
+            # 4. Prepare messages for LLM
             messages = [
                 SystemMessage(content=self.system_prompt),
                 *history_messages,
                 HumanMessage(content=message)
             ]
-            
-            # 4. Create search tool
+
+            # 5. Create search tool with pre-filled parameters
             search_tool = StructuredTool.from_function(
                 func=self._search_products_impl,
                 name="search_products",
@@ -414,19 +543,74 @@ SELECTED_PRODUCTS: [B08XYZ12AB, B07ABC34DE, B09LMN56FG, B08TUV78HI, B07JKL90QR]
             print("🤖 Calling Gemini...")
             response = llm_with_tools.invoke(messages)
             
-            # 7. Handle tool calls
+            # 6. Handle tool calls
             all_products = []
-            
+            llm_params = {}
+
             while response.tool_calls:
                 print(f"🔧 Tool calls detected: {len(response.tool_calls)}")
-                
+
                 for tool_call in response.tool_calls:
                     if tool_call['name'] == 'search_products':
-                        # Execute search
-                        result = self._search_products_impl(**tool_call['args'])
+                        # Capture LLM-extracted parameters
+                        llm_params = tool_call['args'].copy()
+                        print(f"🤖 LLM extracted parameters: {llm_params}")
+
+                        # MERGE: Combine parsed params with LLM params (parsed takes priority if present)
+                        # Determine appropriate limit based on query complexity
+                        suggested_limit = 30 if (parsed_params.get('price_range_detected') or parsed_params.get('rating_detected')) else 15
+
+                        # FIX: Build query with gender prefix if gender detected
+                        # For follow-ups, ALWAYS use our pre-processed query (with injected category)
+                        # Don't let LLM override it with wrong interpretation
+                        if is_followup and parsed_params.get('clean_query'):
+                            base_query = parsed_params['clean_query']  # Use our injected category
+                            print(f"   → Using pre-processed follow-up query: '{base_query}'")
+                        else:
+                            base_query = llm_params.get('query', parsed_params.get('clean_query', message))
+
+                        search_query = base_query
+
+                        if parsed_params.get('gender'):
+                            gender = parsed_params['gender']
+                            # Convert gender to search prefix: "male" → "men's", "female" → "women's"
+                            gender_prefix = "men's" if gender == "male" else "women's" if gender == "female" else gender
+
+                            # Only add gender prefix if not already in query
+                            if gender_prefix.lower() not in base_query.lower() and gender.lower() not in base_query.lower():
+                                search_query = f"{gender_prefix} {base_query}".strip()
+                                print(f"👫 Adding gender to query: '{base_query}' → '{search_query}'")
+
+                        # FIX: Use requested_count if user said "2 more", "3 more", etc.
+                        final_limit = parsed_params.get('requested_count') or llm_params.get('limit', suggested_limit)
+
+                        merged_params = {
+                            'query': search_query,  # Now includes gender prefix
+                            'min_price': parsed_params.get('min_price') or llm_params.get('min_price'),
+                            'max_price': parsed_params.get('max_price') or llm_params.get('max_price'),
+                            'min_rating': parsed_params.get('min_rating') or llm_params.get('min_rating'),
+                            'sort_by': parsed_params.get('sort_by') or llm_params.get('sort_by'),
+                            'limit': final_limit,  # Now respects requested_count
+                            'offset': llm_params.get('offset', 0),
+                        }
+
+                        print(f"🔀 Merged parameters: {merged_params}")
+
+                        # Execute search with merged parameters
+                        result = self._search_products_impl(**merged_params)
                         result_data = json.loads(result)
                         all_products = result_data.get('products', [])
-                        
+
+                        # FIX: Filter out products already shown in previous queries (for follow-ups)
+                        if is_followup:
+                            shown_asins_set = set(last_context.get('shown_asins', []))
+                            if shown_asins_set:
+                                original_count = len(all_products)
+                                all_products = [p for p in all_products if p.get('asin') not in shown_asins_set]
+                                filtered_count = original_count - len(all_products)
+                                if filtered_count > 0:
+                                    print(f"🔁 Filtered {filtered_count} duplicate products from previous queries")
+
                         # Add tool result to messages
                         messages.append(response)
                         messages.append(
@@ -498,8 +682,48 @@ SELECTED_PRODUCTS: [B08XYZ12AB, B07ABC34DE, B09LMN56FG, B08TUV78HI, B07JKL90QR]
                     "product_asins": [p.get('asin') for p in products_to_show]
                 }
             )
-            
-            # 11. Return response
+
+            # 11. UPDATE SESSION CONTEXT FOR NEXT QUERY
+            if products_to_show:
+                # FIX: Only detect category from user's query, NOT from product titles
+                # Product titles can be misleading (e.g., "accessory" in dress titles → jewelry category)
+                detected_category = extract_category(message)
+
+                # Get current shown ASINs
+                shown_asins = [p.get('asin') for p in products_to_show if p.get('asin')]
+
+                # FIX: For follow-ups, accumulate shown_asins; for new searches, reset
+                if is_followup:
+                    # Append to existing shown ASINs (avoid showing same products again)
+                    existing_asins = last_context.get('shown_asins', [])
+                    shown_asins = existing_asins + shown_asins
+                    print(f"🔁 Accumulating shown ASINs: {len(existing_asins)} previous + {len([p.get('asin') for p in products_to_show if p.get('asin')])} new = {len(shown_asins)} total")
+                else:
+                    # New search - reset shown ASINs
+                    print(f"🆕 New search - resetting shown ASINs: {len(shown_asins)} products")
+
+                self.session_manager.update_search_context(
+                    session_id=session_id,
+                    category=detected_category,
+                    gender=parsed_params.get('gender'),
+                    min_price=parsed_params.get('min_price'),
+                    max_price=parsed_params.get('max_price'),
+                    product_count=len(products_to_show),
+                    shown_asins=shown_asins
+                )
+                print(f"💾 Updated session context: category={detected_category}, gender={parsed_params.get('gender')}")
+
+            # 12. LOG EXTRACTION FOR CONSISTENCY TRACKING
+            log_extraction(
+                session_id=session_id,
+                original_query=message,
+                parsed_params=parsed_params,
+                llm_params=llm_params,
+                search_results_count=len(all_products),
+                final_products_count=len(products_to_show)
+            )
+
+            # 13. Return response
             return {
                 "response": response_text,
                 "products": products_to_show,
@@ -509,7 +733,9 @@ SELECTED_PRODUCTS: [B08XYZ12AB, B07ABC34DE, B09LMN56FG, B08TUV78HI, B07JKL90QR]
                 "search_metadata": {
                     "total_found": len(all_products),
                     "shown": len(products_to_show),
-                    "search_query": message
+                    "search_query": message,
+                    "parsed_params": parsed_params,
+                    "llm_params": llm_params
                 },
                 "session_id": session_id
             }
@@ -535,13 +761,62 @@ SELECTED_PRODUCTS: [B08XYZ12AB, B07ABC34DE, B09LMN56FG, B08TUV78HI, B07JKL90QR]
         for msg in messages:
             content = msg.content if hasattr(msg, 'content') else str(msg)
             role = msg.role if hasattr(msg, 'role') else 'user'
-            
+
             if role == MessageRole.USER or role == 'user':
                 formatted.append(HumanMessage(content=content))
             elif role == MessageRole.ASSISTANT or role == 'assistant':
                 formatted.append(AIMessage(content=content))
-        
+
         return formatted
+
+    def _format_history_for_llm_filtered(self, messages: List) -> List:
+        """
+        Convert session messages to LLM format, FILTERING out off-topic messages.
+        Keeps only product-related conversations to avoid context contamination.
+        """
+        # Keywords that indicate off-topic queries
+        off_topic_keywords = [
+            'what is', 'how to', 'why', 'when', 'where',
+            'calculate', 'math', 'equation', '+', '=',
+            'skydiving', 'recipe', 'weather', 'news',
+            'tell me about', 'explain', 'define'
+        ]
+
+        # Product-related keywords
+        product_keywords = [
+            'show', 'find', 'search', 'get', 'give', 'recommend',
+            'need', 'want', 'looking for', 'buy', 'purchase',
+            'bag', 'shoe', 'watch', 'jewelry', 'clothing',
+            'accessories', 'more', 'another', 'different',
+            'price', 'cheap', 'expensive', 'dollar', '$',
+            'wife', 'husband', 'mother', 'father', 'gift'
+        ]
+
+        formatted = []
+        for msg in messages:
+            content = msg.content if hasattr(msg, 'content') else str(msg)
+            role = msg.role if hasattr(msg, 'role') else 'user'
+            content_lower = content.lower()
+
+            # Filter out off-topic user messages
+            if role == MessageRole.USER or role == 'user':
+                # Check if message is off-topic
+                is_offtopic = any(kw in content_lower for kw in off_topic_keywords)
+                is_product_related = any(kw in content_lower for kw in product_keywords)
+
+                # Skip if clearly off-topic and not product-related
+                if is_offtopic and not is_product_related:
+                    print(f"🚫 Filtering off-topic message: {content[:50]}...")
+                    continue
+
+                formatted.append(HumanMessage(content=content))
+
+            elif role == MessageRole.ASSISTANT or role == 'assistant':
+                # Keep assistant messages (they contain product context)
+                formatted.append(AIMessage(content=content))
+
+        # Keep only last 10 messages to avoid overwhelming context
+        return formatted[-10:]
     
     def _format_products_for_ui(self, products: List[Dict]) -> List[Dict]:
         """Format products for frontend display"""

@@ -4,13 +4,18 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 from models.schemas import ConversationMessage, MessageRole, SessionData
 import os
+import re
+
+# Global in-memory storage (persists across instance creations)
+# This ensures context is maintained even if Redis fails and new instances are created
+_GLOBAL_SESSION_MEMORY = {}
 
 class SessionManager:
     """Manages conversation sessions and memory using Redis or in-memory fallback"""
-    
+
     def __init__(self, redis_url: str = None):
         self.use_redis = False
-        self.memory = {}  # In-memory fallback
+        self.memory = _GLOBAL_SESSION_MEMORY  # Use global memory (persists across instances)
         
         if redis_url:
             try:
@@ -18,27 +23,15 @@ class SessionManager:
                 use_ssl = redis_url.startswith('rediss://') or 'redis-cloud.com' in redis_url or 'redns.redis-cloud.com' in redis_url
                 
                 if use_ssl:
-                    # SSL configuration for Redis Cloud - FIX: Remove ssl_cert_reqs
-                    # Use a cleaner approach that works with modern redis-py versions
-                    try:
-                        # Try modern redis-py approach (v4.2+)
-                        self.redis = redis.from_url(
-                            redis_url,
-                            decode_responses=True,
-                            socket_connect_timeout=5,
-                            socket_timeout=5,
-                            retry_on_timeout=True,
-                            ssl_cert_reqs="none"  # Use string instead of None, or omit entirely
-                        )
-                    except TypeError:
-                        # Fallback for older versions or if ssl_cert_reqs isn't supported
-                        self.redis = redis.from_url(
-                            redis_url,
-                            decode_responses=True,
-                            socket_connect_timeout=5,
-                            socket_timeout=5,
-                            retry_on_timeout=True
-                        )
+                    # SSL configuration for Redis Cloud
+                    # Modern redis-py handles SSL automatically, no ssl_cert_reqs needed
+                    self.redis = redis.from_url(
+                        redis_url,
+                        decode_responses=True,
+                        socket_connect_timeout=5,
+                        socket_timeout=5,
+                        retry_on_timeout=True
+                    )
                 else:
                     # Regular Redis without SSL
                     self.redis = redis.from_url(
@@ -208,11 +201,20 @@ class SessionManager:
         brands = ['nike', 'adidas', 'apple', 'samsung', 'puma', 'reebok', 'amazon']
         preferences["brands"] = [brand for brand in brands if brand in all_text]
         
-        # Extract gender preferences
-        if any(word in all_text for word in ['men', 'man', 'male', 'boys']):
-            preferences["gender"] = "male"
-        elif any(word in all_text for word in ['women', 'woman', 'female', 'girls', 'ladies']):
+        # Extract gender preferences - ENHANCED with family relationships
+        # FIX: Use word boundaries to prevent "he" matching in "her", "men" in "recommend", etc.
+        male_keywords = ['men', 'man', 'male', 'boys', 'husband', 'father', 'dad', 'brother', 'son', 'boyfriend', 'him', 'his']
+        female_keywords = ['women', 'woman', 'female', 'girls', 'ladies', 'wife', 'mother', 'mom', 'sister', 'daughter', 'girlfriend', 'her']
+
+        # Count matches with word boundaries to avoid false positives
+        male_matches = sum(1 for word in male_keywords if re.search(r'\b' + re.escape(word) + r'\b', all_text))
+        female_matches = sum(1 for word in female_keywords if re.search(r'\b' + re.escape(word) + r'\b', all_text))
+
+        # Prioritize whichever gender has MORE matches (more confident detection)
+        if female_matches > male_matches:
             preferences["gender"] = "female"
+        elif male_matches > 0:
+            preferences["gender"] = "male"
         
         # Extract price preferences
         if any(word in all_text for word in ['cheap', 'budget', 'affordable', 'low price']):
@@ -234,6 +236,43 @@ class SessionManager:
         """Get a specific value from session context"""
         session = self.get_session(session_id)
         return session.context.get(key, default)
+
+    def get_last_search_context(self, session_id: str) -> Dict[str, Any]:
+        """
+        Get context from the last successful product search.
+        Returns category, gender, price_range from last search.
+        """
+        session = self.get_session(session_id)
+
+        # Get from session.context (updated after each search)
+        return {
+            "last_category": session.context.get("last_category"),
+            "last_gender": session.context.get("last_gender"),
+            "last_min_price": session.context.get("last_min_price"),
+            "last_max_price": session.context.get("last_max_price"),
+            "last_product_count": session.context.get("last_product_count", 5),
+            "shown_asins": session.context.get("shown_asins", [])
+        }
+
+    def update_search_context(self, session_id: str, category: Optional[str], gender: Optional[str],
+                            min_price: Optional[float], max_price: Optional[float],
+                            product_count: int, shown_asins: List[str]):
+        """Update session context after a successful search"""
+        session = self.get_session(session_id)
+
+        if category:
+            session.context["last_category"] = category
+        if gender:
+            session.context["last_gender"] = gender
+        if min_price is not None:
+            session.context["last_min_price"] = min_price
+        if max_price is not None:
+            session.context["last_max_price"] = max_price
+
+        session.context["last_product_count"] = product_count
+        session.context["shown_asins"] = shown_asins
+
+        self.save_session(session)
     
     def clear_session(self, session_id: str):
         """Clear session data"""

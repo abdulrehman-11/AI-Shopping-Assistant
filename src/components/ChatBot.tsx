@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Trash2 } from 'lucide-react';
+import { X, Trash2, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import ProductCard from './ProductCard';
 
 interface Product {
   asin: string;
@@ -67,11 +66,26 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
     }
   ];
 });
-  
+
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Helper function to parse price string to ProductCard format
+  const parsePrice = (priceStr: string) => {
+    // Handle formats like "$49.99", "USD49.99", "49.99"
+    const match = priceStr.match(/([A-Z$€£¥]*)([\d,.]+)/);
+    if (match) {
+      const currency = match[1] || '$';
+      const value = parseFloat(match[2].replace(/,/g, ''));
+      return {
+        currency,
+        value
+      };
+    }
+    return undefined;
+  };
 
   // Check backend connection on mount
   useEffect(() => {
@@ -396,9 +410,9 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
 
           {messages.map((message) => (
             <div key={message.id} className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[80%] p-3 rounded-lg ${
-                message.type === 'user' 
-                  ? 'bg-primary text-primary-foreground' 
+              <div className={`max-w-[85%] p-3 rounded-lg ${
+                message.type === 'user'
+                  ? 'bg-primary text-primary-foreground'
                   : 'bg-muted'
               }`}>
                 <div className="text-sm">
@@ -432,41 +446,78 @@ const ChatBot: React.FC<ChatBotProps> = ({ onClose }) => {
                   </div>
                 )}
                 
-                {/* Product Results */}
+                {/* Product Results - Compact Inline Cards */}
                 {message.products && message.products.length > 0 && (
-                  <div className="mt-3 space-y-2">
+                  <div className="mt-2 space-y-2">
                     {message.products.map((product, index) => (
-                      <div key={index} className="bg-card p-2 rounded border">
-                        <div className="flex items-center space-x-2">
-                          <img 
-                            src={product.image || product.thumbnailImage || product.image_url || '/placeholder.svg'} 
-                            alt={product.title}
-                            className="w-12 h-12 object-cover rounded"
-                            onError={(e) => {
-                              const target = e.target as HTMLImageElement;
-                              if (target.src !== '/placeholder.svg') {
-                                target.src = '/placeholder.svg';
-                              }
-                            }}
-                          />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs font-medium line-clamp-2">{product.title}</p>
-                            <div className="flex items-center space-x-1 text-xs text-muted-foreground">
+                      <div key={index} className="bg-card rounded border shadow-sm hover:shadow transition-shadow overflow-hidden">
+                        <div className="flex gap-2 p-2">
+                          {/* Product Image - Compact */}
+                          <div className="relative w-20 h-20 flex-shrink-0 bg-gray-50 rounded overflow-hidden">
+                            <img
+                              src={product.image || product.thumbnailImage || product.image_url || '/placeholder.svg'}
+                              alt={product.title}
+                              className="w-full h-full object-contain"
+                              onError={(e) => {
+                                const target = e.target as HTMLImageElement;
+                                if (target.src !== '/placeholder.svg') {
+                                  target.src = '/placeholder.svg';
+                                }
+                              }}
+                            />
+                          </div>
+
+                          {/* Product Info - Compact */}
+                          <div className="flex-1 min-w-0 flex flex-col justify-between">
+                            <div>
+                              <h4 className="text-xs font-semibold line-clamp-2 leading-tight mb-1">
+                                {product.title}
+                              </h4>
+
+                              {/* Rating and Reviews */}
                               {product.rating > 0 && (
-                                <span>⭐ {product.rating.toFixed(1)}</span>
-                              )}
-                              {product.reviews > 0 && (
-                                <span>({product.reviews} reviews)</span>
+                                <div className="flex items-center gap-1 mb-1">
+                                  <div className="flex">
+                                    {[1, 2, 3, 4, 5].map((star) => (
+                                      <svg
+                                        key={star}
+                                        className={`w-3 h-3 ${
+                                          star <= Math.round(product.rating)
+                                            ? 'fill-yellow-400 text-yellow-400'
+                                            : 'fill-gray-200 text-gray-200'
+                                        }`}
+                                        viewBox="0 0 20 20"
+                                      >
+                                        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                      </svg>
+                                    ))}
+                                  </div>
+                                  <span className="text-xs font-medium text-gray-600">
+                                    {product.rating.toFixed(1)}
+                                  </span>
+                                  {product.reviews > 0 && (
+                                    <span className="text-xs text-gray-400">
+                                      ({product.reviews > 1000 ? `${(product.reviews / 1000).toFixed(1)}k` : product.reviews})
+                                    </span>
+                                  )}
+                                </div>
                               )}
                             </div>
-                            <p className="text-xs text-muted-foreground">{product.price}</p>
-                            <Button
-                              size="sm"
-                              className="mt-1 h-6 text-xs bg-gradient-primary"
-                              onClick={() => product.url && product.url !== '#' ? window.open(product.url, '_blank') : null}
-                            >
-                              View on Amazon
-                            </Button>
+
+                            {/* Price and Button */}
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-sm font-bold text-primary">
+                                {product.price}
+                              </span>
+                              <Button
+                                size="sm"
+                                className="h-7 text-xs px-2 bg-gradient-primary hover:opacity-90"
+                                onClick={() => product.url && product.url !== '#' ? window.open(product.url, '_blank') : null}
+                              >
+                                <ExternalLink className="h-3 w-3 mr-1" />
+                                View
+                              </Button>
+                            </div>
                           </div>
                         </div>
                       </div>
